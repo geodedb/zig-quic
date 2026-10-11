@@ -119,6 +119,10 @@ sbom-scan:
 
 # E2E tests with multiple QUIC client implementations
 # Tests Python (aioquic), Go (quic-go), Rust (quinn), and Zig clients
+# Required live unit regressions use generated P-256 credentials.
+.generate-unit-test-certs: &generate-unit-test-certs
+  - bash scripts/generate_interop_certs.sh tests/certs
+
 # Generate test certificates for E2E tests
 .generate-test-certs: &generate-test-certs
   - bash scripts/generate_interop_certs.sh .interop-certs
@@ -173,8 +177,9 @@ test:
       - zig-cache/
       - .zig-cache/
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev openssl
     - *install-zig
+    - *generate-unit-test-certs
   script:
     - zig build test --summary all
 
@@ -209,7 +214,7 @@ test-fips:
       - zig-cache/
       - .zig-cache/
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential perl wget ca-certificates git sudo gnupg dirmngr python3
+    - apt-get update && apt-get install -y --no-install-recommends build-essential perl wget ca-certificates git sudo gnupg dirmngr python3 openssl
     - *install-zig
     - python3 scripts/test_fips_provision.py
     # OpenSSL identifies this bundle as authoritative when key servers differ:
@@ -218,6 +223,7 @@ test-fips:
     - wget -q https://www.openssl-library.org/source/pubkeys.asc -O /tmp/openssl-pubkeys.asc
     - gpg --batch --import /tmp/openssl-pubkeys.asc
     - zig build provision-fips -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+    - *generate-unit-test-certs
   script:
     - OPENSSL_CONF=/usr/local/ssl/ssl/openssl.cnf zig build test -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
 
@@ -241,8 +247,9 @@ test-release-safe:
       - zig-cache/
       - .zig-cache/
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev openssl
     - *install-zig
+    - *generate-unit-test-certs
   script:
     - zig build test -Doptimize=ReleaseSafe --summary all
 
@@ -266,8 +273,9 @@ test-release-fast:
       - zig-cache/
       - .zig-cache/
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev openssl
     - *install-zig
+    - *generate-unit-test-certs
   script:
     - zig build test -Doptimize=ReleaseFast --summary all
 
@@ -294,8 +302,9 @@ test-release-small:
       - zig-cache/
       - .zig-cache/
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev openssl
     - *install-zig
+    - *generate-unit-test-certs
   script:
     - zig build test -Doptimize=ReleaseSmall --summary all
 

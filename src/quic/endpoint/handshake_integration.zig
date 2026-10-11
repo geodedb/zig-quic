@@ -564,15 +564,16 @@ pub fn installApplicationKeys(
     conn.initial_rx_keys = null;
     conn.initial_tx_keys = null;
 
-    // RFC 9001 §4.1.2: Server MUST wait until peer Finished is received before dropping handshake keys.
-    // Client can drop immediately after sending its Finished.
+    // RFC 9001 §4.1.2 / §4.9.2: retain client Handshake keys and Finished
+    // recovery until the server confirms receipt. Application keys alone do
+    // not prove that the client's last Handshake datagram arrived.
     // Additionally, wait until we've sent at least one Handshake packet for coalescing (RFC 9000 §12.2).
     const can_drop_hs_keys = if (conn.role == .Server)
         // Server: wait for peer_finished_verified (client Finished received) AND first Handshake packet sent
         (conn.peer_finished_verified and conn.handshake_packet_sent)
     else
-        // Client: drop after sending Finished AND first Handshake packet sent
-        (conn.handshake_packet_sent);
+        // Client: HANDSHAKE_DONE confirms the server received Finished.
+        (conn.handshake_packet_sent and conn.handshake_done_seen);
 
     if (can_drop_hs_keys) {
         logger.debugPrint("  {s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (conn.role == .Server) "Server" else "Client", conn.peer_finished_verified });

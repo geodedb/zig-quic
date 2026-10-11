@@ -125,6 +125,22 @@ Newest entries go **above** the placeholder marker. Keep entries short
 (six lines or so) and link out to MRs for detail. Date headings use
 ISO-8601 `YYYY-MM-DD`.
 
+### 2026-10-11 — SONNY-4791: Handshake recovery qualification in progress
+
+- Parent `884aa9dd1e03a37220f446247a4b7e35745b08ea` was captured before the
+  runtime changes; its complete 76-row capture is included as `baseline.json`.
+- Capture environment: Zig 0.16.0, Linux x86_64, host `haleth`, kernel
+  `6.12.95+deb13-amd64`, affinity CPUs 8–11 on a shared host.
+- Client Handshake keys and Finished CRYPTO now survive until confirmation.
+  The packet-loss regression fails on the parent and passes with the fix;
+  the original 32-client regression passed 20 separate processes.
+- The full local suite passes 158 tests with three existing skips. An earlier
+  full run failed the concurrent test (18/32 clients); later diagnostic and
+  original-test results are recorded separately and do not erase that result.
+- Performance capture, the unchanged relative/absolute gates, and required CI
+  remain outstanding. Keep the MR draft until qualification completes; this
+  entry makes no performance-improvement or release-readiness claim.
+
 <!-- New entries go above this line -->
 
 ### 2026-04-20 — Initial v2 baseline capture

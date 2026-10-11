@@ -855,6 +855,17 @@ pub fn build(b: *std.Build) void {
     loopback_mod.addImport("compat", compat_mod);
     const testlog_mod = mkModule(b, "tests/helpers/testlog.zig");
 
+    const handshake_retention_tests = addTst(b, testlog_mod, compat_mod, "tests/test_handshake_key_retention.zig", target, optimize);
+    handshake_retention_tests.root_module.addImport("quic_conn", quic_conn_mod);
+    handshake_retention_tests.root_module.addImport("handshake_integration", endpoint_handshake_integration_mod);
+    handshake_retention_tests.root_module.addImport("quic_tls", quic_tls_mod);
+    handshake_retention_tests.root_module.addImport("quic_crypto", quic_crypto_mod);
+    handshake_retention_tests.root_module.addImport("quic_varint", quic_varint_mod);
+    handshake_retention_tests.root_module.addImport("quic_frame", quic_frame_mod);
+    const run_handshake_retention_tests = b.addRunArtifact(handshake_retention_tests);
+    b.step("test-handshake-key-retention", "Test Handshake recovery before and after confirmation").dependOn(&run_handshake_retention_tests.step);
+    if (filter == null) test_step.dependOn(&run_handshake_retention_tests.step);
+
     // Loopback transport adapter (adapts loopback to Transport interface)
     const adapter_mod = mkModule(b, "tests/integration/loopback_transport_adapter.zig");
     adapter_mod.addImport("loopback", loopback_mod);

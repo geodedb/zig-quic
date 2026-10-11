@@ -365,3 +365,91 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
     try testing.expectEqual(@as(u32, 0), failures);
     try testing.expectEqual(@as(u32, PARALLEL_CLIENTS), successes);
 }
+
+const DropClientFinished = struct {
+    sender: *const fn (*anyopaque, *api.Connection, []const u8) anyerror!usize,
+    context: *anyopaque,
+    dropped: bool = false,
+    handshake_packets: usize = 0,
+
+    fn send(raw: *anyopaque, conn: *api.Connection, bytes: []const u8) !usize {
+        const self: *DropClientFinished = @ptrCast(@alignCast(raw));
+        // Connection.send carries the client's Finished before Handshake ACKs,
+        // which the endpoint sends separately. Simulate loss after submission.
+        if (bytes.len > 0 and bytes[0] & 0xf0 == 0xe0) {
+            self.handshake_packets += 1;
+            if (!self.dropped) {
+                self.dropped = true;
+                return bytes.len;
+            }
+        }
+        return self.sender(self.context, conn, bytes);
+    }
+};
+
+test "lost client Finished recovers automatically and delivers stream data" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const allocator = std.heap.page_allocator;
+    // This regression requires the same generated P-256 fixture as the existing
+    // high-parallel test, but missing credentials must not silently skip it.
+    const creds = loadServerCreds(allocator) orelse return error.MissingTestCredentials;
+    defer allocator.free(creds.cert_der);
+    defer allocator.free(creds.priv_p256);
+    var address_buf: [32]u8 = undefined;
+    const address = try std.fmt.bufPrint(&address_buf, "127.0.0.1:{d}", .{allocatePort()});
+    const server_cfg = cfg.QuicConfig{
+        .alpn = &test_alpn,
+        .inline_server_cert_der = creds.cert_der,
+        .inline_server_priv_p256 = creds.priv_p256,
+        .allow_insecure = true,
+    };
+    var server = try endpoint_mod.Endpoint.init(allocator, address, &server_cfg);
+    defer server.deinit();
+    const client_cfg = cfg.QuicConfig{ .alpn = &test_alpn, .allow_insecure = true };
+    var client = try endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &client_cfg);
+    defer client.deinit();
+    const conn = try api.connect(&client, address, SERVER_SNI);
+    var drop = DropClientFinished{ .sender = conn.sender_fn.?, .context = conn.sender_ctx.? };
+    conn.setSender(&drop, DropClientFinished.send);
+    defer conn.setSender(drop.context, drop.sender);
+
+    var peer: ?*api.Connection = null;
+    const handshake_deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
+    while (nowMs() < handshake_deadline and !conn.handshake_done_seen) {
+        _ = try server.pollWithStats(1);
+        if (peer == null) peer = server.popAccepted();
+        _ = try client.pollWithStats(1);
+    }
+    try testing.expect(drop.dropped);
+    try testing.expect(drop.handshake_packets >= 2);
+    try testing.expect(conn.handshake_done_seen);
+    const accepted = peer orelse return error.ServerDidNotAccept;
+    try testing.expect(accepted.peer_finished_verified);
+    try testing.expect(conn.hs_tx_keys == null and conn.hs_rx_keys == null);
+    try testing.expect(conn.crypto_retx_handshake == null);
+
+    const payload = "stream data after a lost Finished";
+    const stream = try api.openStream(conn, true);
+    try testing.expectEqual(payload.len, try api.writeStream(conn, stream, payload, true));
+    var received: usize = 0;
+    var incoming: ?api.QuicStreamId = null;
+    var data: [payload.len]u8 = undefined;
+    const stream_deadline = nowMs() + RT_TIMEOUT_MS;
+    while (nowMs() < stream_deadline) {
+        _ = try client.pollWithStats(1);
+        _ = try server.pollWithStats(1);
+        if (incoming == null and api.hasIncomingStreams(accepted)) incoming = try api.acceptStream(accepted);
+        if (incoming) |sid| {
+            if (received < data.len) {
+                const n = api.readStream(accepted, sid, data[received..]) catch |err| {
+                    if (err == error.WouldBlock) continue;
+                    return err;
+                };
+                received += n;
+            }
+            if (received == data.len and api.isStreamFinished(accepted, sid)) break;
+        }
+    }
+    try testing.expectEqualStrings(payload, data[0..received]);
+    try testing.expect(api.isStreamFinished(accepted, incoming orelse return error.StreamNotAccepted));
+}

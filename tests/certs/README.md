@@ -69,3 +69,18 @@ signing key and restricts the surviving server key to mode 0600.
 `create_test_certs.sh` also prepares these fixtures. They are separate from the
 existing integration fixtures at the root of this directory. CI uses the same
 generator in `.interop-certs` for its CLI interoperability tests.
+
+## Required Handshake recovery regression
+
+The Linux dropped-Finished regression requires `cert.pem` and `key.pem` in this
+directory and fails if they are missing. Generate them before running it:
+
+```bash
+bash scripts/generate_interop_certs.sh tests/certs
+zig build test -Dtest-filter=high_parallel
+```
+
+The Debug, ReleaseSafe, ReleaseFast, ReleaseSmall, and FIPS CI test jobs generate
+these fixtures before running the full suite. The loss test drops the first
+client Handshake datagram after submission, checks automatic recovery and server
+confirmation, then verifies stream data and FIN delivery.

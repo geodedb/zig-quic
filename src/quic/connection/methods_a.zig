@@ -369,6 +369,8 @@ pub fn bind(comptime Connection: type) type {
         /// Send CRYPTO frame data in a Handshake packet (Phase 24)
         pub fn sendHandshakeCrypto(self: *Connection, crypto_data: []const u8) !void {
             const tx = self.hs_tx_keys orelse return error.NoKeys;
+            if (crypto_data.len == 0) return;
+            const next_offset = try std.math.add(u64, self.crypto_tx_off_handshake, crypto_data.len);
 
             // #163: stack buffer replaces per-call ArrayList assembly.
             var frame_buf: [2048]u8 = undefined;
@@ -378,10 +380,25 @@ pub fn bind(comptime Connection: type) type {
                 .offset = self.crypto_tx_off_handshake,
                 .data = crypto_data,
             } };
-            _ = crypto_frame.write(w) catch return;
+            _ = try crypto_frame.write(w);
+
+            // TLS releases its output after this call. Retain every submitted
+            // byte until Handshake confirmation so a lost Finished can be
+            // retransmitted. Allocate before sending, preserving the previous
+            // flight and accounting if allocation or transport submission fails.
+            const previous = self.crypto_retx_handshake orelse &.{};
+            if (previous.len > 0 and
+                try std.math.add(u64, self.crypto_retx_handshake_off, previous.len) != self.crypto_tx_off_handshake)
+                return error.InvalidHandshakeRecoveryOffset;
+            const retained_len = try std.math.add(usize, previous.len, crypto_data.len);
+            const retained = try self.allocator.alloc(u8, retained_len);
+            errdefer self.allocator.free(retained);
+            @memcpy(retained[0..previous.len], previous);
+            @memcpy(retained[previous.len..], crypto_data);
+            const retained_offset = if (previous.len > 0) self.crypto_retx_handshake_off else self.crypto_tx_off_handshake;
 
             // Encode Handshake packet
-            const out = packet.encodeHandshakeProtected(
+            const out = try packet.encodeHandshakeProtected(
                 self.allocator.*,
                 self.version,
                 self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
@@ -390,7 +407,7 @@ pub fn bind(comptime Connection: type) type {
                 2, // pn_len
                 fbs.getWritten(),
                 tx,
-            ) catch return;
+            );
 
             defer self.allocator.free(out);
             const sent = self.send(out) catch |err| {
@@ -403,9 +420,12 @@ pub fn bind(comptime Connection: type) type {
             }
 
             // Update state
-            self.crypto_tx_off_handshake += crypto_data.len;
+            if (self.crypto_retx_handshake) |old| self.allocator.free(old);
+            self.crypto_retx_handshake = retained;
+            self.crypto_retx_handshake_off = retained_offset;
+            self.crypto_tx_off_handshake = next_offset;
             // Mark that at least one Handshake packet has been transmitted.
-            // This gates RFC 9001 Handshake key discard on the client path.
+            // Client key discard also requires server confirmation.
             self.handshake_packet_sent = true;
             self.onPacketSent(.Handshake, self.pn_handshake_tx, out.len, true);
             self.pn_handshake_tx +%= 1;
