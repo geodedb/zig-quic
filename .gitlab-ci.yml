@@ -1002,3 +1002,16 @@ update-go-dependencies:
 
       echo "Created merge request for dependency updates"
   allow_failure: true
+
+# Synthetic measurements verify gate decisions; this is not a performance run.
+test-perf-rounds:
+  stage: test
+  image: python:3.14-slim
+  tags: [company, linux, x86]
+  needs: []
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git jq
+  script:
+    - python3 scripts/test_perf_rounds.py
+    - python3 scripts/test_hook_env.py
+  allow_failure: false
