@@ -16,6 +16,7 @@ default:
   # they could not execute (`quic-client: Syntax error: ")" unexpected`) and
   # the perf gate compared aarch64 numbers to the x86_64 baseline
   # (`ENV MISMATCH`). Same tag devnw/zig/ldap uses.
+  interruptible: true
   tags:
     - company
     - linux
@@ -1015,3 +1016,12 @@ test-perf-rounds:
     - python3 scripts/test_perf_rounds.py
     - python3 scripts/test_hook_env.py
   allow_failure: false
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      auto_cancel:
+        on_new_commit: none
+    - when: always
