@@ -220,7 +220,7 @@ pub const QuicTransport = struct {
             const inner = conn.quic_connection orelse conn.inner;
             conn.close();
             if (self.endpoint) |ep| {
-                api.destroy(ep, inner);
+                destroyUnderEndpointLock(ep, inner);
             } else {
                 inner.deinit();
             }
@@ -434,6 +434,19 @@ pub const QuicTransport = struct {
         }
     }
 
+    /// `api.destroy` requires the endpoint mutex (it mutates conns/accepted/
+    /// retired and may release + re-acquire `mu` while waiting for poll workers
+    /// that pin the connection). Take the same locks, in the same order, as
+    /// geode's deferred-destroy drain: pto_lifetime_mu -> mu.
+    fn destroyUnderEndpointLock(ep: *api.QuicEndpoint, inner: *api.QuicConnection) void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        ep.pto_lifetime_mu.lockUncancelable(io);
+        defer ep.pto_lifetime_mu.unlock(io);
+        ep.mu.lockUncancelable(io);
+        defer ep.mu.unlock(io);
+        api.destroy(ep, inner);
+    }
+
     /// Process deferred connection destructions queued by worker threads.
     /// Must be called by the polling thread.
     pub fn drainPendingDestroy(self: *QuicTransport) void {
@@ -446,7 +459,7 @@ pub const QuicTransport = struct {
 
         for (self.pending_destroy.items) |inner_conn| {
             if (self.endpoint) |ep| {
-                api.destroy(ep, inner_conn);
+                destroyUnderEndpointLock(ep, inner_conn);
             } else {
                 inner_conn.deinit();
             }

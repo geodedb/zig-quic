@@ -997,6 +997,28 @@ pub fn build(b: *std.Build) void {
             const run_test_udp_transport_only = b.addRunArtifact(test_udp_transport_only);
             test_step.dependOn(&run_test_udp_transport_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "teardown_churn_stress")) {
+            // Opt-in stress harness (not in the default graph): geode-shaped
+            // multi-poller server with connect/stream/close/destroyBatch churn.
+            // Intended for `taskset -c 0` single-CPU runs.
+            const test_teardown_churn = addTst(b, testlog_mod, compat_mod, "tests/test_endpoint_teardown_churn_stress.zig", target, optimize);
+            test_teardown_churn.root_module.addImport("quic_api", quic_api_mod);
+            test_teardown_churn.root_module.addImport("quic_config", quic_config_mod);
+            const run_test_teardown_churn = b.addRunArtifact(test_teardown_churn);
+            run_test_teardown_churn.has_side_effects = true;
+            test_step.dependOn(&run_test_teardown_churn.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "teardown_deadlock")) {
+            // Regression: Endpoint.mu <-> poll-worker deadlock between
+            // destroyConnections (waiting for RX refs under mu) and a pinned
+            // poll worker that needs mu (maybeQueueDeferredAccepted).
+            const test_teardown_deadlock = addTst(b, testlog_mod, compat_mod, "tests/test_endpoint_teardown_deadlock_regression.zig", target, optimize);
+            test_teardown_deadlock.root_module.addImport("quic_api", quic_api_mod);
+            test_teardown_deadlock.root_module.addImport("quic_conn", quic_conn_mod);
+            test_teardown_deadlock.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
+            test_step.dependOn(&run_test_teardown_deadlock.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "pto_handshake_uaf")) {
             // Regression test for the UAF in processExpiredTimers when a
             // PtoHandshake / PtoInitial timer fires after its captured
@@ -2396,6 +2418,25 @@ pub fn build(b: *std.Build) void {
         }
         const run_observability_enabled_tests = b.addRunArtifact(observability_enabled_tests);
         test_step.dependOn(&run_observability_enabled_tests.step);
+
+        // Regression: Endpoint.mu <-> poll-worker teardown deadlock (quic
+        // v0.1.44, gdb-captured at conn.zig beginEndpointDestroy /
+        // endpoint.zig destroyConnections). Pre-fix the forced interleaving
+        // hangs; the test fails on a 10 s deadline instead. Lives in the
+        // default test graph so every `zig build test` gates it.
+        const test_teardown_deadlock = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_endpoint_teardown_deadlock_regression.zig",
+            target,
+            optimize,
+        );
+        test_teardown_deadlock.root_module.addImport("quic_api", quic_api_mod);
+        test_teardown_deadlock.root_module.addImport("quic_conn", quic_conn_mod);
+        test_teardown_deadlock.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
+        test_step.dependOn(&run_test_teardown_deadlock.step);
 
         // Regression: concurrent-HELLO NoHandshakeKeys race pinned by
         // commit 4b246b2 ("fix(handshake): drive TLS state machine
