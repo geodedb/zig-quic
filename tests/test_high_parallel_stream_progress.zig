@@ -21,12 +21,6 @@ const PAYLOAD_BYTES: usize = 1024;
 const HANDSHAKE_TIMEOUT_MS: i64 = 5_000;
 const RT_TIMEOUT_MS: i64 = 7_000;
 
-var next_port = std.atomic.Value(u16).init(19850);
-
-fn allocatePort() u16 {
-    return next_port.fetchAdd(1, .seq_cst);
-}
-
 fn nowMs() i64 {
     var ts: std.os.linux.timespec = undefined;
     _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
@@ -292,18 +286,18 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
     defer allocator.free(creds.cert_der);
     defer allocator.free(creds.priv_p256);
 
-    const port = allocatePort();
-    var bind_buf: [32]u8 = undefined;
-    const bind_addr = try std.fmt.bufPrint(&bind_buf, "127.0.0.1:{d}", .{port});
-
     var server_cfg = cfg.QuicConfig{
         .alpn = &test_alpn,
         .inline_server_cert_der = creds.cert_der,
         .inline_server_priv_p256 = creds.priv_p256,
         .allow_insecure = true,
     };
-    var server_ep = try endpoint_mod.Endpoint.init(allocator, bind_addr, &server_cfg);
+    // Independent test processes must not share a fixed UDP listener and its
+    // Retry routing. Keep the OS-assigned socket bound for the entire fixture.
+    var server_ep = try endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &server_cfg);
     defer server_ep.deinit();
+    const port = api.getPort(&server_ep);
+    try testing.expect(port != 0);
 
     var target_buf: [32]u8 = undefined;
     const server_target = try std.fmt.bufPrint(&target_buf, "127.0.0.1:{d}", .{port});

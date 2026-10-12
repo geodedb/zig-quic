@@ -2002,7 +2002,12 @@ pub const Endpoint = struct {
             drain_loop: while (true) {
                 if (stats.packets_processed >= max_packets_this_poll) break :drain_loop;
                 const packet_budget_left = max_packets_this_poll - stats.packets_processed;
-                const recv_limit = @min(recv_slots.len, packet_budget_left);
+                // A short-header quota can stop processing within a mixed
+                // receive batch. Never read more slots than can be consumed
+                // even if every packet is short; the tail then stays owned by
+                // the transport for the next poll instead of being abandoned.
+                const short_header_budget_left = max_short_header_packets_this_poll - short_header_packets_processed;
+                const recv_limit = @min(recv_slots.len, @min(packet_budget_left, short_header_budget_left));
 
                 // 4a: Receive batch (no lock needed for transport recv)
                 const batch_n = self.transport.recvBatch(recv_slots[0..recv_limit]) catch |err| {

@@ -2524,6 +2524,14 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Benchmark suite (benchmarks/ directory)
     //
+    const test_receive_accounting = addTst(b, testlog_mod, compat_mod, "tests/test_receive_accounting.zig", target, optimize);
+    test_receive_accounting.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_receive_accounting.root_module.addImport("transport", endpoint_transport_mod);
+    test_receive_accounting.root_module.addImport("config.zig", quic_config_mod);
+    const run_receive_accounting = b.addRunArtifact(test_receive_accounting);
+    test_step.dependOn(&run_receive_accounting.step);
+    b.step("test-receive-accounting", "Run deterministic bounded receive-accounting regressions").dependOn(&run_receive_accounting.step);
+
     // Phase 3 rewire: the legacy `bench/` directory (quic-bench, bench_tls_*,
     // udp_batch_bench) and its independent v1 scaffolds (poll_bench, scale_bench,
     // throughput_bench, handshake_bench) have been retired. All measurement
