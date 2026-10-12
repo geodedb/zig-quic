@@ -139,6 +139,18 @@ if command -v gpg >/dev/null 2>&1; then
     # the field (some older series use the previous key) can be verified.
     gpg --batch --keyserver hkps://keys.openpgp.org \
       --recv-keys "${OPENSSL_RELEASE_KEY_CURRENT}" "${OPENSSL_RELEASE_KEY_PREVIOUS}" 2>/dev/null || true
+    # keys.openpgp.org only serves user IDs whose owner verified the email,
+    # and it now serves the previous release key (BA54...81EF, which signed
+    # 3.6.3) without any user ID, so gpg refuses to import it ("w/o user
+    # IDs"). Fall back to keyserver.ubuntu.com for any pinned key still
+    # missing. --recv-keys is given the full fingerprint, so gpg only accepts
+    # the exact pinned key, and the signer check below is unchanged.
+    for fpr in "${OPENSSL_RELEASE_KEY_CURRENT}" "${OPENSSL_RELEASE_KEY_PREVIOUS}"; do
+      if ! gpg --batch --list-keys "${fpr}" >/dev/null 2>&1; then
+        gpg --batch --keyserver hkps://keyserver.ubuntu.com \
+          --recv-keys "${fpr}" 2>/dev/null || true
+      fi
+    done
     # Require the signature to be from one of the two pinned fingerprints.
     GPG_SIGNER="$(gpg --verify "${TARBALL}.asc" "${TARBALL}" 2>&1)" || {
       log "ERROR: GPG signature verification FAILED for ${TARBALL}"
