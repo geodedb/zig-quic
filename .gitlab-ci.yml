@@ -1013,4 +1013,5 @@ test-perf-rounds:
     - apt-get update && apt-get install -y --no-install-recommends git jq
   script:
     - python3 scripts/test_perf_rounds.py
+    - python3 scripts/test_hook_env.py
   allow_failure: false
