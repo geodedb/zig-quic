@@ -6,16 +6,18 @@ Last updated: 2026-04-20
 
 Relative regression thresholds applied by `scripts/perf-gate.sh` +
 `benchmarks/compare.zig`. A scenario FAILs if the observed delta exceeds
-the tier %-threshold **and** the 3× baseline-stddev noise floor. The
+the tier %-threshold **and** the 3× baseline-stddev noise floor **and**
+the tier's absolute noise floor, and (with several paired rounds) the
+regression reproduces across rounds; see [Noise tolerance](#noise-tolerance). The
 `wait_bound_fraction_permille` column is an annotation-only budget
 (logged, not gated) for integration scenarios that track how much of the
 total wall-clock sat in `poll`-bound waits vs. the inner hot path.
 
-| Tier | Throughput regression | Latency p95 regression | Allocation regression | Noise floor | wait_bound_fraction_permille |
-|---|---|---|---|---|---|
-| Micro (`micro/`) | -15% | -10% | Zero-delta hard gate | 3x stddev | -100‰ |
-| Integration (`integration/`) | -20% | -25% | -30% | 3x stddev | -200‰ |
-| External (`external/`) | -25% | -30% | N/A | 3x stddev | -300‰ |
+| Tier | Throughput regression | Latency p95 regression | Allocation regression | Noise floor | Absolute floor | wait_bound_fraction_permille |
+|---|---|---|---|---|---|---|
+| Micro (`micro/`) | -15% | -10% | Zero-delta hard gate | 3x stddev | > 3 ns | -100‰ |
+| Integration (`integration/`) | -20% | -25% | -30% | 3x stddev | 0 | -200‰ |
+| External (`external/`) | -25% | -30% | N/A | 3x stddev | 0 | -300‰ |
 
 Micro-tier scenarios may ALSO carry absolute gates; see
 "CI Performance Budgets" below. Absolute gates trigger ABSOLUTE-FAIL
@@ -70,6 +72,44 @@ gate (-15% significant, -10% pass/warn, zero-delta hard gate).
 
 Thresholds are intentionally conservative to avoid host-noise flakiness
 while still catching material regressions.
+
+## Noise tolerance
+
+The CI gate (`quality-zig-gates`) runs `--suite=micro` in paired-commit
+mode on shared AWS Spot runners with `PERF_GATE_ROUNDS=3`. Under the old
+rule (any round that FAILs any row fails the job) it failed on almost
+every run from June to October 2026, each time on different rows: p95
+values moving by 1 ns on 5-20 ns rows, and random 10-250% swings on
+single rounds. Two mechanisms now separate that noise from regressions.
+
+1. **Absolute floor** (`latency_floor_ns` in `benchmarks/compare.zig`).
+   A throughput or p95 regression only counts when the p95 grew by
+   **more than** the floor, or the per-op time (`1e9 / ops_per_sec`) grew
+   by more than the floor. Micro latencies are batch-averaged over 256
+   ops and truncated to whole nanoseconds, so a single quantum is
+   +5-20% on a 5-20 ns row. The micro floor is 3 ns (three quanta);
+   the %-thresholds still apply in full above it, so a 1000 ns row
+   still fails at +10%. Rows that breach a %-threshold but stay inside
+   the floor print as `NOISE` and do not gate. Rows of 3 ns or less
+   (`varint`, `pacing`) are covered by their absolute p99 gates instead.
+   Integration and external tiers keep a floor of 0.
+2. **Reproduction across alternating rounds.** With `PERF_GATE_ROUNDS=N`
+   (N > 1), `scripts/perf-gate.sh` captures N baseline/HEAD pairs,
+   alternating which side runs first, and passes all pairs to one
+   `bench-compare` call. A row FAILs only if a strict majority of rounds
+   FAIL it **and** every round shows at least a WARN-level regression
+   (half the threshold, above the floor). `ABSOLUTE-FAIL` and
+   `WAIT-BOUND-FAIL` need a strict majority of rounds; the UDP batch
+   ratio gate likewise. Rounds are never merged into a synthetic
+   best-of row. With one round the verdict is that round's verdict.
+
+Self-test: `zig build test-bench-compare` (run by `quality-zig-gates`
+before the gate) replays the per-round rows from three failed CI jobs
+(`tests/fixtures/perf_gate_ci_noise.tsv`) and requires them to pass, then
+injects a +25% regression into representative rows in every round and
+requires each one to fail, and checks that a +50% regression is caught
+on at least 85% of rows. `scripts/test_perf_rounds.py` covers the shell
+driver (alternating order, every pair compared, no synthesized rows).
 
 `scripts/perf-gate.sh` also enforces the Linux UDP batching guardrail as
 a post-compare ratio check (absorbed from the retired

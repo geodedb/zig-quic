@@ -17,8 +17,15 @@
 #        there to capture baseline JSON, then runs the same suite on the
 #        working-tree HEAD and invokes `zig build bench-compare`.
 #        Cleans up the worktree on exit. PERF_GATE_ROUNDS=N (default 1)
-#        captures both sides N times, interleaved, and compares the
-#        per-row best of each side.
+#        captures both sides N times, alternating which side runs first
+#        (odd rounds: baseline then HEAD; even rounds: HEAD then baseline),
+#        so a slower second slot (turbo decay, a neighbour waking up)
+#        cannot bias one side. Every round stays a real paired
+#        observation; nothing is merged across rounds. All pairs go to a
+#        single `bench-compare` call, which FAILs a row only when the
+#        regression reproduces: a strict majority of rounds FAIL it and
+#        no round clears it. See "Noise tolerance" in
+#        docs/PERFORMANCE_TARGETS.md.
 #
 #   2. Manual (two pre-captured JSONs):
 #      scripts/perf-gate.sh --baseline=<path.json> --current=<path.json>
@@ -173,6 +180,47 @@ run_compare() {
 }
 
 # ---------------------------------------------------------------------------
+# Multi-round compare: one bench-compare call with every round's pair, so
+# compare.zig can require a regression to reproduce across rounds. The
+# udp-batch ratio gate runs per round and fails only when a strict
+# majority of rounds fail it.
+# args: <baseline1> <current1> [<baseline2> <current2> ...]
+# ---------------------------------------------------------------------------
+run_compare_rounds() {
+    local -a compare_args=()
+    local -a currents=()
+    while [[ $# -ge 2 ]]; do
+        [[ -f "$1" ]] || die_invoke "baseline JSON not found: $1"
+        [[ -f "$2" ]] || die_invoke "current JSON not found: $2"
+        compare_args+=("--baseline=$1" "--current=$2")
+        currents+=("$2")
+        shift 2
+    done
+    local rounds=${#currents[@]}
+
+    log "running bench-compare over $rounds paired rounds"
+    local compare_rc=0
+    "${ZIG_RUNNER[@]}" build bench-compare -- "${compare_args[@]}" || compare_rc=$?
+    log "bench-compare exit=$compare_rc"
+
+    local ratio_fails=0 current
+    for current in "${currents[@]}"; do
+        udp_batch_ratio_gate "$current" || ratio_fails=$((ratio_fails + 1))
+    done
+    if [[ $ratio_fails -gt 0 ]]; then
+        log "udp-batch ratio gate: failed in $ratio_fails/$rounds rounds"
+    fi
+
+    if [[ $compare_rc -ne 0 ]]; then
+        return $compare_rc
+    fi
+    if [[ $((ratio_fails * 2)) -gt $rounds ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Mode 1: Paired-commit (temp worktree for baseline capture)
 # ---------------------------------------------------------------------------
 mode_paired_commit() {
@@ -199,8 +247,11 @@ mode_paired_commit() {
 
     # Keep each round as a paired observation. Selecting the best throughput
     # and lowest latency across different rounds can invent a measurement
-    # that never occurred, or hide a failure behind another passing round.
-    # All requested pairs use the unchanged comparator and ratio gates.
+    # that never occurred, so rounds are never merged. Instead compare.zig
+    # sees every pair and fails a row only if its regression reproduces
+    # across rounds (strict majority FAIL, no clean round). On the shared
+    # CI runners a single round flags 1-10 random rows per run (different
+    # rows each time) while a real regression shows up in every round.
     local rounds="${PERF_GATE_ROUNDS:-1}"
     [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || die_invoke "PERF_GATE_ROUNDS must be a positive integer, got '$rounds'."
 
@@ -211,22 +262,26 @@ mode_paired_commit() {
         log "capturing current (HEAD) — suite=$suite"
         run_bench "$suite" "$current_json"
     else
-        local r gate_rc=0 pair_rc round_baseline round_current
+        local r round_baseline round_current
+        local -a pairs=()
         for ((r = 1; r <= rounds; r++)); do
             round_baseline="$PAIRED_DIR/$short_sha-baseline.r$r.json"
             round_current="$PAIRED_DIR/HEAD-current.r$r.json"
-            log "round $r/$rounds: capturing baseline ($short_sha) — suite=$suite"
-            (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$round_baseline")
-
-            log "round $r/$rounds: capturing current (HEAD) — suite=$suite"
-            run_bench "$suite" "$round_current"
-            pair_rc=0
-            run_compare "$round_baseline" "$round_current" || pair_rc=$?
-            if [[ "$gate_rc" -eq 0 && "$pair_rc" -ne 0 ]]; then
-                gate_rc=$pair_rc
+            if ((r % 2 == 1)); then
+                log "round $r/$rounds: capturing baseline ($short_sha) first — suite=$suite"
+                (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$round_baseline")
+                log "round $r/$rounds: capturing current (HEAD) — suite=$suite"
+                run_bench "$suite" "$round_current"
+            else
+                log "round $r/$rounds: capturing current (HEAD) first — suite=$suite"
+                run_bench "$suite" "$round_current"
+                log "round $r/$rounds: capturing baseline ($short_sha) — suite=$suite"
+                (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$round_baseline")
             fi
+            pairs+=("$round_baseline" "$round_current")
         done
-        return "$gate_rc"
+        run_compare_rounds "${pairs[@]}"
+        return $?
     fi
 
     run_compare "$baseline_json" "$current_json"
@@ -349,6 +404,8 @@ Usage:
 Environment:
   ZIG=<path>                  override zig binary (bypasses mise)
   UDP_BATCH_SPEEDUP_MIN=0.95  batch/single throughput ratio floor
+  PERF_GATE_ROUNDS=1          paired rounds for --baseline-commit (alternating
+                              order; a row fails only if it reproduces)
 EOF
 }
 

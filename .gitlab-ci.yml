@@ -661,12 +661,14 @@ quality-zig-gates:
     # Full history so the paired-commit perf gate can check out the
     # comparison commit (MR diff base / previous main commit).
     GIT_DEPTH: "0"
-    # Best of 3 interleaved baseline/HEAD captures per side (see
-    # scripts/perf-gate.sh). With single captures on the shared x86 pools,
-    # the same source passed in 2935996196, then failed loss_detection_scan
-    # in 2936039032 and connection_lookup in 2936132303 (swings of 20-40%,
-    # each time on rows that had passed before), so the gate tripped on
-    # noise, not regressions.
+    # 3 paired baseline/HEAD rounds in alternating order (see
+    # scripts/perf-gate.sh). A row fails only if its regression reproduces:
+    # a strict majority of rounds FAIL it and no round clears it, and micro
+    # rows must also move by more than the 3 ns absolute floor
+    # (benchmarks/compare.zig, docs/PERFORMANCE_TARGETS.md#noise-tolerance).
+    # Failing on any single round tripped on noise on nearly every run since
+    # June (e.g. 2936039032, 2936132303, 2937011195, 2938467287), each
+    # time on different rows.
     PERF_GATE_ROUNDS: "3"
   tags:
     - company
@@ -696,6 +698,9 @@ quality-zig-gates:
     # scripts/perf_udp_batch_gate.sh is absorbed as a post-compare jq
     # check in perf-gate.sh itself.
     - apt-get install -y --no-install-recommends jq
+    # Self-test of the comparator's noise rules against recorded CI noise
+    # and injected regressions (tests/test_bench_compare.zig).
+    - zig build test-bench-compare
     # Paired-commit mode: bench the comparison commit and HEAD back to back
     # on the same runner, then compare. The committed
     # benchmarks/results/baseline.json was captured on a developer
