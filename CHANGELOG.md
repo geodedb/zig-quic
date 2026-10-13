@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix a use-after-free in the server's pending-handshake retry (`pollWithStats` Phase 4.5). The retry snapshotted connection pointers from `pending_hs_send_set` and used them after dropping the set's lock, without `Endpoint.mu` or an endpoint RX pin, so a concurrent `api.destroy` / `api.destroyBatch` could free a connection mid-retry, and a `NoHandshakeKeys` retry re-inserted the freed pointer for the next poll. The retry now pins each connection while it is still in the set; destroy waits for the pin exactly as for an RX poll worker, and connections already being destroyed are dropped from the set instead of retried.
+
 ## [0.1.47] - 2026-10-24
 
 ### Fixed
