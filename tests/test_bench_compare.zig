@@ -163,15 +163,25 @@ fn microRow(scenario: []const u8, variant: []const u8, ops: f64, p95: u64) @impo
 }
 
 test "floor: a 1 ns quantisation step on a 9 ns row is NOISE, not FAIL" {
-    // Job 17111970401 round 2: goaway p95 9 -> 10 ns (+11%), throughput
-    // 84.4M -> 71.6M ops/s (-15.1%, i.e. +2.1 ns per op).
+    // Job 17111970401 round 3: goaway p95 9 -> 10 ns (+11%) with
+    // throughput flat.
     const e = compare.evaluateRow(
-        microRow("micro/frame_serialization", "goaway", 84_383_735.0, 9),
-        microRow("micro/frame_serialization", "goaway", 71_614_701.7, 10),
+        microRow("micro/frame_serialization", "goaway", 87_000_000.0, 9),
+        microRow("micro/frame_serialization", "goaway", 87_000_000.0, 10),
     );
     try std.testing.expectEqual(compare.Level.pass, e.level);
     try std.testing.expect(e.noise);
     try std.testing.expectEqualStrings("NOISE", e.status());
+}
+
+test "floor: -15% throughput on a 2 ns op stays inside the 1 ns per-op floor" {
+    // varint encode at ~500M ops/s is 2 ns/op; -20% is +0.5 ns/op.
+    const e = compare.evaluateRow(
+        microRow("micro/varint", "encode", 500_000_000.0, 2),
+        microRow("micro/varint", "encode", 400_000_000.0, 2),
+    );
+    try std.testing.expectEqual(compare.Level.pass, e.level);
+    try std.testing.expect(e.noise);
 }
 
 test "floor: a real regression on a tiny row still FAILs once it clears the floor" {
@@ -200,7 +210,9 @@ test "floor: keeps the 10 percent p95 threshold for meaningful values" {
 
 test "floor: integration tier keeps a zero floor" {
     try std.testing.expectEqual(@as(u64, 0), compare.thresholds(.integration).latency_floor_ns);
+    try std.testing.expectEqual(@as(u64, 0), compare.thresholds(.integration).throughput_floor_ns);
     try std.testing.expectEqual(@as(u64, 3), compare.thresholds(.micro).latency_floor_ns);
+    try std.testing.expectEqual(@as(u64, 1), compare.thresholds(.micro).throughput_floor_ns);
 }
 
 fn pair(scenario: []const u8, variant: []const u8, ops_base: f64, ops_cur: f64, p95_base: u64, p95_cur: u64) compare.RowPair {
@@ -413,7 +425,7 @@ test "self-test: a +50% regression is detected on most rows above the floor" {
             if (res.injected_failed) detected += 1;
         }
     }
-    // 132 of 132 at the time of writing (+25%: 113 of 132; +15%: 78 of 132,
+    // 132 of 132 at the time of writing (+25%: 116 of 132; +15%: 81 of 132,
     // since a regression smaller than the runner's round-to-round spread
     // cannot be told apart from noise with three rounds per side).
     if (detected * 100 < total * 95) {

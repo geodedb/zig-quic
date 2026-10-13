@@ -15,7 +15,7 @@ total wall-clock sat in `poll`-bound waits vs. the inner hot path.
 
 | Tier | Throughput regression | Latency p95 regression | Allocation regression | Noise floor | Absolute floor | wait_bound_fraction_permille |
 |---|---|---|---|---|---|---|
-| Micro (`micro/`) | -15% | -10% | Zero-delta hard gate | 3x stddev | > 3 ns | -100‰ |
+| Micro (`micro/`) | -15% | -10% | Zero-delta hard gate | 3x stddev | p95 > 3 ns, per-op > 1 ns | -100‰ |
 | Integration (`integration/`) | -20% | -25% | -30% | 3x stddev | 0 | -200‰ |
 | External (`external/`) | -25% | -30% | N/A | 3x stddev | 0 | -300‰ |
 
@@ -82,17 +82,19 @@ every run from June to October 2026, each time on different rows: p95
 values moving by 1 ns on 5-20 ns rows, and random 10-250% swings on
 single rounds. Two mechanisms now separate that noise from regressions.
 
-1. **Absolute floor** (`latency_floor_ns` in `benchmarks/compare.zig`).
-   A throughput or p95 regression only counts when the p95 grew by
-   **more than** the floor, or the per-op time (`1e9 / ops_per_sec`) grew
-   by more than the floor. Micro latencies are batch-averaged over 256
-   ops and truncated to whole nanoseconds, so a single quantum is
-   +5-20% on a 5-20 ns row. The micro floor is 3 ns (three quanta);
-   the %-thresholds still apply in full above it, so a 1000 ns row
+1. **Absolute floors** (`latency_floor_ns`, `throughput_floor_ns` in
+   `benchmarks/compare.zig`). A p95 regression only counts when the p95
+   grew by **more than 3 ns**; a throughput regression only counts when
+   the per-op time (`1e9 / ops_per_sec`) grew by **more than 1 ns**.
+   Micro latencies are batch-averaged over 256 ops and truncated to
+   whole nanoseconds, so a single quantum is +5-20% on a 5-20 ns row
+   (p95 floor = three quanta). Throughput is the median of six timed runs
+   and is not quantised; its 1 ns floor keeps 1-2 ns ops (`varint`,
+   `pacing`) from failing on sub-nanosecond code-alignment shifts. The
+   %-thresholds still apply in full above the floors, so a 1000 ns row
    still fails at +10%. Rows that breach a %-threshold but stay inside
-   the floor print as `NOISE` and do not gate. Rows of 3 ns or less
-   (`varint`, `pacing`) are covered by their absolute p99 gates instead.
-   Integration and external tiers keep a floor of 0.
+   the floor print as `NOISE` and do not gate. Integration and external
+   tiers keep floors of 0.
 2. **Reproduction across alternating rounds.** With `PERF_GATE_ROUNDS=N`
    (N > 1), `scripts/perf-gate.sh` captures N baseline/HEAD pairs,
    alternating which side runs first, and passes all pairs to one
@@ -116,8 +118,8 @@ on noise (`tests/fixtures/perf_gate_ci_noise.tsv`, 140 rows x 3 rounds)
 and requires all of them to pass. It then injects a regression into the
 recorded HEAD side in every round: +25% must fail on representative rows
 of every micro family in every job, and +50% must be caught on at least
-95% of rows above the floor (132/132 when written; +25%: 113/132; +15%:
-78/132, since a change smaller than the runner's round-to-round spread
+95% of rows above the floor (132/132 when written; +25%: 116/132; +15%:
+81/132, since a change smaller than the runner's round-to-round spread
 cannot be separated from noise with three rounds). `scripts/test_perf_rounds.py` covers the shell
 driver (alternating order, every pair compared, no synthesized rows).
 

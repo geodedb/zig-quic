@@ -9,13 +9,14 @@
 //
 //   1. Relative threshold per tier (micro: throughput -15%, p95 +10%),
 //      widened for throughput to 3x the baseline run-to-run stddev.
-//   2. Absolute noise floor per tier (`latency_floor_ns`). A regression
-//      must ALSO move the p95 latency, or the per-op time derived from
-//      throughput (1e9 / ops_per_sec), by more than the floor. Micro
-//      latencies are batch-averaged and truncated to whole nanoseconds,
-//      so on 5-30 ns rows a +1 ns quantisation step alone is +3-20%.
-//      Rows that breach the % threshold but stay inside the floor are
-//      reported as NOISE and never gate.
+//   2. Absolute noise floors per tier. A p95 regression must ALSO grow
+//      the p95 by more than `latency_floor_ns`, and a throughput
+//      regression must grow the per-op time (1e9 / ops_per_sec) by more
+//      than `throughput_floor_ns`. Micro latencies are batch-averaged and
+//      truncated to whole nanoseconds, so on 5-30 ns rows a +1 ns
+//      quantisation step alone is +3-20% (micro p95 floor: 3 ns). Rows
+//      that breach the % threshold but stay inside the floor are reported
+//      as NOISE and never gate.
 //   3. Reproduction across rounds. Pass several --baseline/--current
 //      pairs (scripts/perf-gate.sh does this for PERF_GATE_ROUNDS > 1,
 //      alternating capture order between rounds). A row FAILs only when
@@ -42,24 +43,30 @@ pub const TierThresholds = struct {
     // `mutex_hold_wall_ns` and have non-zero `wall_time_ns`. See
     // `computeWaitBoundPermille` + derived gate in evaluateRow().
     wait_bound_permille: u64,
-    // Absolute noise floor in nanoseconds. A latency or throughput
-    // regression only counts when p95 grew by MORE than this many ns, or
-    // the per-op time (1e9 / throughput) grew by more than this many ns.
-    // Micro: 3 ns = three quanta of the 1 ns batch-averaged sample
-    // resolution. Shared CI runners move 5-30 ns rows by 1-2 ns between
-    // back-to-back runs of the same binary (jobs 17111063471,
-    // 17111970401: goaway 9->10 ns, stop_sending 15->17 ns). The other
-    // tiers measure microseconds to milliseconds, where the %-threshold
-    // already dominates, so their floor stays 0 (previous behaviour).
+    // Absolute noise floor for p95, in nanoseconds: a p95 regression only
+    // counts when p95 grew by MORE than this. Micro: 3 ns = three quanta
+    // of the 1 ns batch-averaged, truncated sample. Shared CI runners
+    // move 5-30 ns rows by 1-2 ns between back-to-back runs of the same
+    // binary (jobs 17111063471, 17111970401: goaway 9->10 ns,
+    // stop_sending 15->17 ns). The other tiers measure microseconds to
+    // milliseconds, where the %-threshold already dominates, so their
+    // floor stays 0 (previous behaviour).
     latency_floor_ns: u64,
+    // Absolute noise floor for throughput, as per-op time in nanoseconds
+    // (1e9 / ops_per_sec): a throughput regression only counts when the
+    // per-op time grew by MORE than this. Throughput is the median of six
+    // timed runs and is not quantised, so the micro floor is 1 ns; it
+    // keeps 1-2 ns ops (varint, pacing), where -15% is a fraction of a
+    // nanosecond, from failing on code-alignment shifts. Others: 0.
+    throughput_floor_ns: u64,
 };
 
 pub fn thresholds(t: Tier) TierThresholds {
     return switch (t) {
-        .micro => .{ .throughput_pct = 15.0, .latency_p95_pct = 10.0, .alloc_bytes_pct = 0.0, .wait_bound_permille = 100, .latency_floor_ns = 3 },
-        .integration => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = 30.0, .wait_bound_permille = 200, .latency_floor_ns = 0 },
-        .external => .{ .throughput_pct = 25.0, .latency_p95_pct = 30.0, .alloc_bytes_pct = null, .wait_bound_permille = 300, .latency_floor_ns = 0 },
-        .unknown => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = null, .wait_bound_permille = 200, .latency_floor_ns = 0 },
+        .micro => .{ .throughput_pct = 15.0, .latency_p95_pct = 10.0, .alloc_bytes_pct = 0.0, .wait_bound_permille = 100, .latency_floor_ns = 3, .throughput_floor_ns = 1 },
+        .integration => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = 30.0, .wait_bound_permille = 200, .latency_floor_ns = 0, .throughput_floor_ns = 0 },
+        .external => .{ .throughput_pct = 25.0, .latency_p95_pct = 30.0, .alloc_bytes_pct = null, .wait_bound_permille = 300, .latency_floor_ns = 0, .throughput_floor_ns = 0 },
+        .unknown => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = null, .wait_bound_permille = 200, .latency_floor_ns = 0, .throughput_floor_ns = 0 },
     };
 }
 
@@ -147,6 +154,7 @@ pub fn evaluateRow(base: common.ResultRow, cur: common.ResultRow) RowEval {
     const tier = classify(cur.scenario_name);
     const thr = thresholds(tier);
     const floor_ns: f64 = @floatFromInt(thr.latency_floor_ns);
+    const t_floor_ns: f64 = @floatFromInt(thr.throughput_floor_ns);
 
     const t_delta = pctChange(base.throughput_ops_per_sec, cur.throughput_ops_per_sec);
     const p95_base: f64 = @floatFromInt(base.latency_p95_ns);
@@ -162,7 +170,7 @@ pub fn evaluateRow(base: common.ResultRow, cur: common.ResultRow) RowEval {
     // Absolute size of the change. A zero baseline throughput makes
     // pctChange() report 0, so the per-op delta cannot trip on its own.
     const per_op_grew = base.throughput_ops_per_sec > 0 and
-        perOpNs(cur.throughput_ops_per_sec) - perOpNs(base.throughput_ops_per_sec) > floor_ns;
+        perOpNs(cur.throughput_ops_per_sec) - perOpNs(base.throughput_ops_per_sec) > t_floor_ns;
     const p95_grew = p95_cur - p95_base > floor_ns;
 
     const t_fail_pct = t_delta < -t_gate;
@@ -350,6 +358,7 @@ pub fn aggregate(pairs: []const RowPair) RowVerdict {
     const tier = if (n > 0) classify(pairs[0].cur.scenario_name) else Tier.unknown;
     const thr = thresholds(tier);
     const floor_ns: f64 = @floatFromInt(thr.latency_floor_ns);
+    const t_floor_ns: f64 = @floatFromInt(thr.throughput_floor_ns);
 
     const t_base = median(tb[0..n]);
     const t_cur = median(tc[0..n]);
@@ -358,7 +367,7 @@ pub fn aggregate(pairs: []const RowPair) RowVerdict {
     const t_delta = pctChange(t_base, t_cur);
     const p95_delta = pctChange(p95_base, p95_cur);
     const t_gate = @max(thr.throughput_pct, 3.0 * median(sd[0..n]));
-    const per_op_grew = t_base > 0 and perOpNs(t_cur) - perOpNs(t_base) > floor_ns;
+    const per_op_grew = t_base > 0 and perOpNs(t_cur) - perOpNs(t_base) > t_floor_ns;
     const p95_grew = p95_cur - p95_base > floor_ns;
 
     const regression = (t_sep and t_delta < -t_gate and per_op_grew) or

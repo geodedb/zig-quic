@@ -155,7 +155,8 @@ reproducible baselines:
 - **Thermals:** watch `cpupower frequency-info` or `sensors` between
   captures if the run exceeds a couple of minutes.
 
-The 3x stddev noise floor, the 3 ns micro absolute floor and (with
+The 3x stddev noise floor, the micro absolute floors (p95 3 ns, per-op
+1 ns) and (with
 `PERF_GATE_ROUNDS>1`) the reproduction-across-rounds rule absorb
 moderate variance (see `docs/PERFORMANCE_TARGETS.md#noise-tolerance`),
 but systematic

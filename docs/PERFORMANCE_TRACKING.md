@@ -133,12 +133,12 @@ ISO-8601 `YYYY-MM-DD`.
 - `quality-zig-gates` failed on nearly every main and MR pipeline since
   June on rows that changed from run to run (1 ns moves on 5-20 ns p95s,
   single-round swings on shared Spot runners). Thresholds are unchanged.
-- `compare.zig` adds a 3 ns micro absolute floor and accepts several
-  baseline/current pairs; a row fails only when its regression
+- `compare.zig` adds micro absolute floors (p95 3 ns, per-op 1 ns) and
+  accepts several baseline/current pairs; a row fails only when its regression
   reproduces (every HEAD round worse than every baseline round, median
   change beyond threshold and floor). `perf-gate.sh` alternates capture
   order between rounds. See
-  `docs/PERFORMANCE_TARGETS.md#noise-tolerance`; evidence in MR !76.
+  `docs/PERFORMANCE_TARGETS.md#noise-tolerance`; evidence in MR !77.
 
 <!-- New entries go above this line -->
 
