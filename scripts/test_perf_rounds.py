@@ -72,9 +72,10 @@ if args[:2] == ["build", "bench"]:
         "latency_p99_ns": latency}]}))
 elif args[:2] == ["build", "bench-compare"]:
     # Simplified compare.zig multi-round contract: one call with every pair
-    # in round order; a row fails when a strict majority of pairs fail it.
-    # compare.zig additionally requires that no round is clean; that rule
-    # is unit-tested against recorded CI noise in tests/test_bench_compare.zig.
+    # in round order; a row fails only when it fails in every pair.
+    # compare.zig's real rule (every HEAD round worse than every baseline
+    # round, plus a median effect beyond threshold and floor) is unit-tested
+    # against recorded CI noise in tests/test_bench_compare.zig.
     baselines = [pathlib.Path(a.split("=", 1)[1]) for a in args if a.startswith("--baseline=")]
     currents = [pathlib.Path(a.split("=", 1)[1]) for a in args if a.startswith("--current=")]
     assert len(baselines) == len(currents) and baselines
@@ -87,7 +88,7 @@ elif args[:2] == ["build", "bench-compare"]:
         assert left["round"] == right["round"]
         row = right["rows"][0]
         failed += not (row["throughput_ops_per_sec"] >= 80 and row["latency_p99_ns"] <= 120)
-    sys.exit(1 if failed * 2 > len(baselines) else 0)
+    sys.exit(1 if failed == len(baselines) else 0)
 else:
     sys.exit(99)
 """)
@@ -119,15 +120,15 @@ else:
         return result, receipts
 
     def test_multiround_gate_ignores_a_regression_that_does_not_reproduce(self):
-        # Shared CI runners flag random rows in single rounds; one failing
-        # pair out of three is noise, not a regression.
-        result, comparisons = self.run_rounds([[100, 100], [10, 100], [100, 100]])
+        # Shared CI runners flag random rows in single rounds; a pair that
+        # fails while others pass is noise, not a regression.
+        result, comparisons = self.run_rounds([[100, 100], [10, 100], [10, 100]])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(comparisons), 3)
         self.assertEqual([row[2]["round"] for row in comparisons], [1, 2, 3])
 
     def test_multiround_gate_fails_a_regression_that_reproduces(self):
-        result, comparisons = self.run_rounds([[10, 100], [100, 100], [10, 100]])
+        result, comparisons = self.run_rounds([[10, 100], [50, 100], [10, 100]])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(len(comparisons), 3)
 

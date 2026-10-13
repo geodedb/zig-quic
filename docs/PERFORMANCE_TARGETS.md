@@ -96,19 +96,29 @@ single rounds. Two mechanisms now separate that noise from regressions.
 2. **Reproduction across alternating rounds.** With `PERF_GATE_ROUNDS=N`
    (N > 1), `scripts/perf-gate.sh` captures N baseline/HEAD pairs,
    alternating which side runs first, and passes all pairs to one
-   `bench-compare` call. A row FAILs only if a strict majority of rounds
-   FAIL it **and** every round shows at least a WARN-level regression
-   (half the threshold, above the floor). `ABSOLUTE-FAIL` and
-   `WAIT-BOUND-FAIL` need a strict majority of rounds; the UDP batch
-   ratio gate likewise. Rounds are never merged into a synthetic
-   best-of row. With one round the verdict is that round's verdict.
+   `bench-compare` call. A row FAILs only if **every HEAD round is worse
+   than every baseline round** (the two sides' ranges do not overlap; for
+   3 rounds per side that is an exact one-sided rank test at p = 0.05)
+   **and** the median-to-median change exceeds the tier %-threshold and
+   the absolute floor. A single noisy round, or a tail latency that
+   flips between modes on a shared runner (e.g.
+   `send_buffer_alloc/multi_stream_batch` p95 194/272/199 ns vs
+   192/374/374 ns on identical sources), overlaps the other side and
+   cannot fail the gate. `ABSOLUTE-FAIL` needs a strict majority of
+   rounds, and so does the UDP batch ratio gate; `WAIT-BOUND-FAIL` uses
+   the same separation rule. Rounds are never merged into a synthetic
+   best-of row; each round's own table is still printed. With one round
+   the verdict is that round's verdict.
 
 Self-test: `zig build test-bench-compare` (run by `quality-zig-gates`
-before the gate) replays the per-round rows from three failed CI jobs
-(`tests/fixtures/perf_gate_ci_noise.tsv`) and requires them to pass, then
-injects a +25% regression into representative rows in every round and
-requires each one to fail, and checks that a +50% regression is caught
-on at least 85% of rows. `scripts/test_perf_rounds.py` covers the shell
+before the gate) replays the per-round rows from four CI jobs that failed
+on noise (`tests/fixtures/perf_gate_ci_noise.tsv`, 140 rows x 3 rounds)
+and requires all of them to pass. It then injects a regression into the
+recorded HEAD side in every round: +25% must fail on representative rows
+of every micro family in every job, and +50% must be caught on at least
+95% of rows above the floor (132/132 when written; +25%: 113/132; +15%:
+78/132, since a change smaller than the runner's round-to-round spread
+cannot be separated from noise with three rounds). `scripts/test_perf_rounds.py` covers the shell
 driver (alternating order, every pair compared, no synthesized rows).
 
 `scripts/perf-gate.sh` also enforces the Linux UDP batching guardrail as

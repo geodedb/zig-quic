@@ -663,8 +663,9 @@ quality-zig-gates:
     GIT_DEPTH: "0"
     # 3 paired baseline/HEAD rounds in alternating order (see
     # scripts/perf-gate.sh). A row fails only if its regression reproduces:
-    # a strict majority of rounds FAIL it and no round clears it, and micro
-    # rows must also move by more than the 3 ns absolute floor
+    # every HEAD round is worse than every baseline round and the median
+    # change exceeds the threshold, and micro rows must also move by more
+    # than the 3 ns absolute floor
     # (benchmarks/compare.zig, docs/PERFORMANCE_TARGETS.md#noise-tolerance).
     # Failing on any single round tripped on noise on nearly every run since
     # June (e.g. 2936039032, 2936132303, 2937011195, 2938467287), each

@@ -23,8 +23,9 @@
 #        cannot bias one side. Every round stays a real paired
 #        observation; nothing is merged across rounds. All pairs go to a
 #        single `bench-compare` call, which FAILs a row only when the
-#        regression reproduces: a strict majority of rounds FAIL it and
-#        no round clears it. See "Noise tolerance" in
+#        regression reproduces: every HEAD round is worse than every
+#        baseline round, and the median change exceeds the threshold and
+#        the absolute floor. See "Noise tolerance" in
 #        docs/PERFORMANCE_TARGETS.md.
 #
 #   2. Manual (two pre-captured JSONs):
@@ -183,7 +184,8 @@ run_compare() {
 # Multi-round compare: one bench-compare call with every round's pair, so
 # compare.zig can require a regression to reproduce across rounds. The
 # udp-batch ratio gate runs per round and fails only when a strict
-# majority of rounds fail it.
+# majority of rounds fail it (it is a ratio within one capture, so there
+# is no baseline side to separate from).
 # args: <baseline1> <current1> [<baseline2> <current2> ...]
 # ---------------------------------------------------------------------------
 run_compare_rounds() {
@@ -249,9 +251,10 @@ mode_paired_commit() {
     # and lowest latency across different rounds can invent a measurement
     # that never occurred, so rounds are never merged. Instead compare.zig
     # sees every pair and fails a row only if its regression reproduces
-    # across rounds (strict majority FAIL, no clean round). On the shared
-    # CI runners a single round flags 1-10 random rows per run (different
-    # rows each time) while a real regression shows up in every round.
+    # across rounds (every HEAD round worse than every baseline round, and
+    # a median change beyond threshold and floor). On the shared CI runners
+    # a single round flags 1-10 random rows per run (different rows each
+    # time) while a real regression shifts every round.
     local rounds="${PERF_GATE_ROUNDS:-1}"
     [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || die_invoke "PERF_GATE_ROUNDS must be a positive integer, got '$rounds'."
 

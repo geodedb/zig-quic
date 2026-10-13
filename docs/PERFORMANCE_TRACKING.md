@@ -135,8 +135,9 @@ ISO-8601 `YYYY-MM-DD`.
   single-round swings on shared Spot runners). Thresholds are unchanged.
 - `compare.zig` adds a 3 ns micro absolute floor and accepts several
   baseline/current pairs; a row fails only when its regression
-  reproduces (strict majority FAIL, no clean round). `perf-gate.sh`
-  alternates capture order between rounds. See
+  reproduces (every HEAD round worse than every baseline round, median
+  change beyond threshold and floor). `perf-gate.sh` alternates capture
+  order between rounds. See
   `docs/PERFORMANCE_TARGETS.md#noise-tolerance`; evidence in MR !76.
 
 <!-- New entries go above this line -->

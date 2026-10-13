@@ -203,19 +203,65 @@ test "floor: integration tier keeps a zero floor" {
     try std.testing.expectEqual(@as(u64, 3), compare.thresholds(.micro).latency_floor_ns);
 }
 
-test "reproduced: majority FAIL and no clean round" {
-    const L = compare.Level;
-    try std.testing.expect(compare.reproduced(&.{L.fail}));
-    try std.testing.expect(!compare.reproduced(&.{L.warn}));
-    try std.testing.expect(compare.reproduced(&.{ L.fail, L.fail, L.fail }));
-    try std.testing.expect(compare.reproduced(&.{ L.fail, L.warn, L.fail }));
-    // One clean round means the regression did not reproduce.
-    try std.testing.expect(!compare.reproduced(&.{ L.fail, L.pass, L.fail }));
-    // FAIL in only one of three rounds is not a majority.
-    try std.testing.expect(!compare.reproduced(&.{ L.fail, L.warn, L.warn }));
-    // Two rounds: both must FAIL.
-    try std.testing.expect(!compare.reproduced(&.{ L.fail, L.warn }));
-    try std.testing.expect(compare.reproduced(&.{ L.fail, L.fail }));
+fn pair(scenario: []const u8, variant: []const u8, ops_base: f64, ops_cur: f64, p95_base: u64, p95_cur: u64) compare.RowPair {
+    const base = microRow(scenario, variant, ops_base, p95_base);
+    const cur = microRow(scenario, variant, ops_cur, p95_cur);
+    return .{ .base = base, .cur = cur, .eval = compare.evaluateRow(base, cur) };
+}
+
+test "aggregate: one round is exactly that round's verdict" {
+    const fail = [_]compare.RowPair{pair("micro/aead", "aes128_gcm", 1e6, 1e6, 1000, 1200)};
+    try std.testing.expect(compare.aggregate(&fail).regression);
+    const ok = [_]compare.RowPair{pair("micro/aead", "aes128_gcm", 1e6, 1e6, 1000, 1050)};
+    try std.testing.expect(!compare.aggregate(&ok).regression);
+}
+
+test "aggregate: a tail-latency mode flip that overlaps the baseline does not fail" {
+    // Job 17151264558 (MR !77, identical benchmarked sources):
+    // send_buffer_alloc/multi_stream_batch p95 base {194, 272, 199} vs
+    // HEAD {192, 374, 374}. Every round fails on its own here (the fixture
+    // carries no stddev, so round 1's -17.7% throughput is not widened as
+    // it was in CI), but HEAD's best p95 is better than baseline's worst
+    // and the median throughput moved only -4%, so nothing reproduced.
+    const rows = [_]compare.RowPair{
+        pair("micro/send_buffer_alloc", "multi_stream_batch", 3746463.7, 3084204.2, 194, 192),
+        pair("micro/send_buffer_alloc", "multi_stream_batch", 3666137.7, 3517511.7, 272, 374),
+        pair("micro/send_buffer_alloc", "multi_stream_batch", 3598865.1, 3518585.4, 199, 374),
+    };
+    const v = compare.aggregate(&rows);
+    try std.testing.expectEqual(@as(usize, 3), v.fail_rounds);
+    try std.testing.expect(!v.p95_separated);
+    try std.testing.expect(!v.failed());
+    try std.testing.expectEqualStrings("NOT-REPRODUCED", v.status());
+}
+
+test "aggregate: a regression in every round fails" {
+    const rows = [_]compare.RowPair{
+        pair("micro/aead", "aes128_gcm", 1.00e6, 0.80e6, 1000, 1250),
+        pair("micro/aead", "aes128_gcm", 1.05e6, 0.82e6, 980, 1210),
+        pair("micro/aead", "aes128_gcm", 0.97e6, 0.79e6, 1020, 1290),
+    };
+    const v = compare.aggregate(&rows);
+    try std.testing.expect(v.p95_separated and v.t_separated);
+    try std.testing.expect(v.regression);
+    try std.testing.expectEqualStrings("FAIL", v.status());
+}
+
+test "aggregate: separated but below threshold or floor does not fail" {
+    // Every HEAD round slower, but the medians move only +6% (< 10%).
+    const small = [_]compare.RowPair{
+        pair("micro/aead", "aes128_gcm", 1e6, 1e6, 1000, 1060),
+        pair("micro/aead", "aes128_gcm", 1e6, 1e6, 1010, 1070),
+        pair("micro/aead", "aes128_gcm", 1e6, 1e6, 990, 1050),
+    };
+    try std.testing.expect(!compare.aggregate(&small).regression);
+    // 9 -> 11 ns in every round: +22% but only +2 ns, inside the floor.
+    const tiny = [_]compare.RowPair{
+        pair("micro/frame_serialization", "goaway", 9e7, 9e7, 9, 11),
+        pair("micro/frame_serialization", "goaway", 9e7, 9e7, 9, 11),
+        pair("micro/frame_serialization", "goaway", 9e7, 9e7, 9, 11),
+    };
+    try std.testing.expect(!compare.aggregate(&tiny).regression);
 }
 
 const FixtureRow = struct {
@@ -261,7 +307,7 @@ fn replayJob(
     job: []const u8,
     inject: ?struct { scenario: []const u8, variant: []const u8, factor: f64 },
 ) !struct { failed_rows: usize, injected_failed: bool, rows: usize } {
-    var by_row: std.StringArrayHashMapUnmanaged(std.ArrayList(compare.RowEval)) = .empty;
+    var by_row: std.StringArrayHashMapUnmanaged(std.ArrayList(compare.RowPair)) = .empty;
     for (rows) |r| {
         if (!std.mem.eql(u8, r.job, job)) continue;
         var ops_cur = r.ops_cur;
@@ -272,14 +318,11 @@ fn replayJob(
                 p95_cur = @intFromFloat(@round(@as(f64, @floatFromInt(p95_cur)) * inj.factor));
             }
         }
-        const e = compare.evaluateRow(
-            microRow(r.scenario, r.variant, r.ops_base, r.p95_base),
-            microRow(r.scenario, r.variant, ops_cur, p95_cur),
-        );
+        const p = pair(r.scenario, r.variant, r.ops_base, ops_cur, r.p95_base, p95_cur);
         const key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ r.scenario, r.variant });
         const gop = try by_row.getOrPut(allocator, key);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(allocator, e);
+        try gop.value_ptr.append(allocator, p);
     }
     var failed: usize = 0;
     var injected_failed = false;
@@ -296,7 +339,7 @@ fn replayJob(
     return .{ .failed_rows = failed, .injected_failed = injected_failed, .rows = by_row.count() };
 }
 
-const noise_jobs = [_][]const u8{ "17111970401", "17111063471", "17100113155" };
+const noise_jobs = [_][]const u8{ "17111970401", "17111063471", "17100113155", "17151264558" };
 
 test "self-test: recorded CI runner noise passes the gate" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -304,8 +347,8 @@ test "self-test: recorded CI runner noise passes the gate" {
     const a = arena.allocator();
     const rows = try loadNoiseFixture(a);
     for (noise_jobs) |job| {
-        // Under the old rule (any round FAILs -> gate fails) each of these
-        // jobs failed: 19, 11 and 11 FAIL rows across its rounds.
+        // Under the old rule (any round FAILs -> gate fails) every one of
+        // these jobs failed, each on different rows.
         var old_fails: usize = 0;
         for (rows) |r| {
             if (!std.mem.eql(u8, r.job, job)) continue;
@@ -333,7 +376,10 @@ test "self-test: an injected real regression still fails on top of CI noise" {
         .{ "micro/connection_lookup", "10000" },
         .{ "micro/connection_lookup", "100" },
         .{ "micro/loss_detection_scan", "1000" },
-        .{ "micro/send_buffer_alloc", "stream_only" },
+        // The row whose tail flipped modes in job 17151264558 (above).
+        .{ "micro/send_buffer_alloc", "multi_stream_batch" },
+        .{ "micro/loss_detection_scan", "10000" },
+        .{ "micro/tls_keygen", "hkdf_expand_label" },
         .{ "micro/frame_serialization", "stop_sending" },
         .{ "micro/aead", "chacha20_poly1305" },
     };
@@ -367,9 +413,10 @@ test "self-test: a +50% regression is detected on most rows above the floor" {
             if (res.injected_failed) detected += 1;
         }
     }
-    // 98 of 99 at the time of writing: on the one miss, runner noise in a
-    // single round outweighed the injected regression.
-    if (detected * 100 < total * 85) {
+    // 132 of 132 at the time of writing (+25%: 113 of 132; +15%: 78 of 132,
+    // since a regression smaller than the runner's round-to-round spread
+    // cannot be told apart from noise with three rounds per side).
+    if (detected * 100 < total * 95) {
         std.debug.print("+50% injected regression detected on only {d}/{d} rows\n", .{ detected, total });
         return error.TestUnexpectedResult;
     }
