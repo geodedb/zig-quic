@@ -7,9 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.45] - 2026-10-13
+
+### Changed
+
+- Update dependencies: tls v0.1.24, thread_pool v0.2.9, otel v0.1.28 (lazy) and fips v0.1.3 (lazy). These are the versions the rest of the devnw/zig ecosystem's newest tags pin, so downstream graphs converge without diamonds. The Python test clients move to aioquic 1.6.1.
+- The micro performance gate (`quality-zig-gates`) is now noise-tolerant. A regression must exceed absolute floors (p95 by more than 3 ns, per-op time by more than 1 ns), and with `PERF_GATE_ROUNDS > 1` it must reproduce: rounds are captured in alternating order, and every HEAD round must be worse than every baseline round. See `docs/PERFORMANCE_TARGETS.md#noise-tolerance`.
+
 ### Fixed
 
 - Fix a deadlock between connection teardown and endpoint poll workers. `Endpoint.destroyConnections` (`api.destroy` / `api.destroyBatch`) waited for a connection's in-flight RX refs while the caller held `Endpoint.mu`, and a poll worker holding such a ref needed `Endpoint.mu` (`maybeQueueDeferredAccepted`) before releasing it. Teardown now detaches the connection under `mu`, releases `mu` while waiting for the ref to drain, then re-acquires it to free the connection. A doomed connection is never published to the accept queue, and destroy now also clears the closed / PTO-dirty / pending-handshake side sets. The lock order is documented on `Endpoint.mu`.
+- Preserve every received datagram of a mixed receive batch within the existing processing quotas (receive-tail accounting).
+- `fips-deps`: fetch pinned OpenSSL release keys from keyserver.ubuntu.com when keys.openpgp.org serves them without user IDs.
+
+### Notes
+
+- v0.1.41 to v0.1.44 were tagged from a side branch (GAP-0838 grpc_zig convergence) whose only dependency change, otel v0.1.24, is superseded here. v0.1.45 is the first tag since v0.1.40 that is cut from `main`.
 
 ## [0.1.40] - 2026-09-12
 
