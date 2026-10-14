@@ -87,6 +87,9 @@ documents via `zig build bench-compare` (invoked under
 - **Paired-commit** (`--baseline-commit=<sha>`) — the gate script
   creates a temp worktree on `<sha>`, runs the suite there, then runs
   it again on the working tree and compares. Cleanest for MR review.
+  With `PERF_GATE_ROUNDS=N` it captures N pairs in alternating order and
+  fails only regressions that reproduce across rounds (see
+  `docs/PERFORMANCE_TARGETS.md#noise-tolerance`).
 - **Phased** (`<step-name> before` then `... after`) — for multi-step
   interactive workflows. Writes paired JSON + a markdown diff into
   `benchmarks/results/paired/<step>-{before,after,diff}.{json,md}`.
@@ -124,6 +127,18 @@ Reviewers of a performance-claiming MR — or any MR touching
 Newest entries go **above** the placeholder marker. Keep entries short
 (six lines or so) and link out to MRs for detail. Date headings use
 ISO-8601 `YYYY-MM-DD`.
+
+### 2026-10-13 — Noise-tolerant micro gate (absolute floor + reproduction)
+
+- `quality-zig-gates` failed on nearly every main and MR pipeline since
+  June on rows that changed from run to run (1 ns moves on 5-20 ns p95s,
+  single-round swings on shared Spot runners). Thresholds are unchanged.
+- `compare.zig` adds micro absolute floors (p95 3 ns, per-op 1 ns) and
+  accepts several baseline/current pairs; a row fails only when its regression
+  reproduces (every HEAD round worse than every baseline round, median
+  change beyond threshold and floor). `perf-gate.sh` alternates capture
+  order between rounds. See
+  `docs/PERFORMANCE_TARGETS.md#noise-tolerance`; evidence in MR !77.
 
 <!-- New entries go above this line -->
 

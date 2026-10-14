@@ -62,6 +62,8 @@ if args[:2] == ["build", "bench"]:
     match = re.search(r"\\.r([0-9]+)\\.json$", output.name)
     round_index = int(match[1]) - 1 if match else 0
     current = pathlib.Path("src/runtime").read_text() == "125\\n"
+    with open(os.environ["ROUND_CAPTURES"], "a") as log:
+        log.write(output.name + "\\n")
     throughput, latency = json.loads(os.environ["ROUND_ROWS"])[round_index] if current else [100, 100]
     output.write_text(json.dumps({"round": round_index + 1, "rows": [{
         "scenario_name": "micro/fixture", "variant": "fixture",
@@ -69,20 +71,30 @@ if args[:2] == ["build", "bench"]:
         "latency_p50_ns": latency, "latency_p95_ns": latency,
         "latency_p99_ns": latency}]}))
 elif args[:2] == ["build", "bench-compare"]:
-    baseline = pathlib.Path(argument("--baseline"))
-    current = pathlib.Path(argument("--current"))
-    left = json.loads(baseline.read_text())
-    right = json.loads(current.read_text())
-    with open(os.environ["ROUND_COMPARISONS"], "a") as log:
-        log.write(json.dumps([baseline.name, current.name, right]) + "\\n")
-    assert left["round"] == right["round"]
-    row = right["rows"][0]
-    sys.exit(0 if row["throughput_ops_per_sec"] >= 80 and row["latency_p99_ns"] <= 120 else 1)
+    # Simplified compare.zig multi-round contract: one call with every pair
+    # in round order; a row fails only when it fails in every pair.
+    # compare.zig's real rule (every HEAD round worse than every baseline
+    # round, plus a median effect beyond threshold and floor) is unit-tested
+    # against recorded CI noise in tests/test_bench_compare.zig.
+    baselines = [pathlib.Path(a.split("=", 1)[1]) for a in args if a.startswith("--baseline=")]
+    currents = [pathlib.Path(a.split("=", 1)[1]) for a in args if a.startswith("--current=")]
+    assert len(baselines) == len(currents) and baselines
+    failed = 0
+    for baseline, current in zip(baselines, currents):
+        left = json.loads(baseline.read_text())
+        right = json.loads(current.read_text())
+        with open(os.environ["ROUND_COMPARISONS"], "a") as log:
+            log.write(json.dumps([baseline.name, current.name, right]) + "\\n")
+        assert left["round"] == right["round"]
+        row = right["rows"][0]
+        failed += not (row["throughput_ops_per_sec"] >= 80 and row["latency_p99_ns"] <= 120)
+    sys.exit(1 if failed == len(baselines) else 0)
 else:
     sys.exit(99)
 """)
         compiler.chmod(0o755)
         comparisons = self.directory / "comparisons.jsonl"
+        captures = self.directory / "captures.txt"
         result = subprocess.run(
             [
                 "bash",
@@ -97,19 +109,40 @@ else:
                 PERF_GATE_ROUNDS=str(len(current_rows)),
                 ROUND_ROWS=json.dumps(current_rows),
                 ROUND_COMPARISONS=str(comparisons),
+                ROUND_CAPTURES=str(captures),
             ),
             text=True,
             capture_output=True,
             check=False,
         )
         receipts = [json.loads(line) for line in comparisons.read_text().splitlines()]
+        self.captures = captures.read_text().splitlines()
         return result, receipts
 
-    def test_multiround_gate_keeps_a_failing_pair_after_a_passing_pair(self):
-        result, comparisons = self.run_rounds([[100, 100], [10, 100]])
+    def test_multiround_gate_ignores_a_regression_that_does_not_reproduce(self):
+        # Shared CI runners flag random rows in single rounds; a pair that
+        # fails while others pass is noise, not a regression.
+        result, comparisons = self.run_rounds([[100, 100], [10, 100], [10, 100]])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(comparisons), 3)
+        self.assertEqual([row[2]["round"] for row in comparisons], [1, 2, 3])
+
+    def test_multiround_gate_fails_a_regression_that_reproduces(self):
+        result, comparisons = self.run_rounds([[10, 100], [50, 100], [10, 100]])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertEqual(len(comparisons), 2)
-        self.assertEqual([row[2]["round"] for row in comparisons], [1, 2])
+        self.assertEqual(len(comparisons), 3)
+
+    def test_multiround_gate_alternates_capture_order(self):
+        self.run_rounds([[100, 100], [100, 100], [100, 100]])
+        self.assertEqual(len(self.captures), 6)
+        order = [
+            ("current" if name.startswith("HEAD-") else "baseline")
+            for name in self.captures
+        ]
+        self.assertEqual(
+            order,
+            ["baseline", "current", "current", "baseline", "baseline", "current"],
+        )
 
     def test_multiround_gate_cannot_synthesize_a_row_from_incompatible_rounds(self):
         result, comparisons = self.run_rounds([[100, 400], [50, 100]])
