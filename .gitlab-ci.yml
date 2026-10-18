@@ -661,7 +661,7 @@ quality-zig-gates:
     # Full history so the paired-commit perf gate can check out the
     # comparison commit (MR diff base / previous main commit).
     GIT_DEPTH: "0"
-    # 3 paired baseline/HEAD rounds in alternating order (see
+    # 5 paired baseline/HEAD rounds in alternating order (see
     # scripts/perf-gate.sh). A row fails only if its regression reproduces:
     # every HEAD round is worse than every baseline round and the median
     # change exceeds the threshold, and micro rows must also move by more
@@ -670,7 +670,15 @@ quality-zig-gates:
     # Failing on any single round tripped on noise on nearly every run since
     # June (e.g. 2936039032, 2936132303, 2937011195, 2938467287), each
     # time on different rows.
-    PERF_GATE_ROUNDS: "3"
+    # 5, not 3: the micro suite tests ~70 row/metric pairs per run, and with
+    # 3 rounds per side each has a 1/20 chance of non-overlapping ranges on
+    # identical code. After the floors and thresholds that still left a
+    # false FAIL in about half the runs (main schedule 2948905825:
+    # frame_serialization/ack and reset_stream on unchanged bench sources;
+    # MRs !76 and !80 on connection_lookup/1000 and aead/chacha20). With 5
+    # rounds the chance is 1/252 per pair (about 0.3 per run before the
+    # thresholds apply), for roughly 6 extra minutes.
+    PERF_GATE_ROUNDS: "5"
   tags:
     - company
     - linux
