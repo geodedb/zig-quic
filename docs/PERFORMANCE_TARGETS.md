@@ -76,7 +76,7 @@ while still catching material regressions.
 ## Noise tolerance
 
 The CI gate (`quality-zig-gates`) runs `--suite=micro` in paired-commit
-mode on shared AWS Spot runners with `PERF_GATE_ROUNDS=3`. Under the old
+mode on shared AWS Spot runners with `PERF_GATE_ROUNDS=5`. Under the old
 rule (any round that FAILs any row fails the job) it failed on almost
 every run from June to October 2026, each time on different rows: p95
 values moving by 1 ns on 5-20 ns rows, and random 10-250% swings on
@@ -99,8 +99,9 @@ single rounds. Two mechanisms now separate that noise from regressions.
    (N > 1), `scripts/perf-gate.sh` captures N baseline/HEAD pairs,
    alternating which side runs first, and passes all pairs to one
    `bench-compare` call. A row FAILs only if **every HEAD round is worse
-   than every baseline round** (the two sides' ranges do not overlap; for
-   3 rounds per side that is an exact one-sided rank test at p = 0.05)
+   than every baseline round** (the two sides' ranges do not overlap; an
+   exact one-sided rank test at p = 1/20 for 3 rounds per side and
+   p = 1/252 for 5)
    **and** the median-to-median change exceeds the tier %-threshold and
    the absolute floor. A single noisy round, or a tail latency that
    flips between modes on a shared runner (e.g.
@@ -112,6 +113,16 @@ single rounds. Two mechanisms now separate that noise from regressions.
    best-of row; each round's own table is still printed. With one round
    the verdict is that round's verdict.
 
+   CI uses **5 rounds**. The micro suite checks about 70 row/metric pairs
+   per run, so at 3 rounds (p = 1/20 each) a few pairs separate by chance
+   on identical code, and after the thresholds that still produced a
+   false FAIL in about half of the runs (main schedule 2948905825:
+   `frame_serialization/ack` p95 455 -> 1078 ns in all three rounds on
+   unchanged bench sources; MRs !76 and !80 on `connection_lookup/1000`
+   and `aead/chacha20_poly1305`, code neither touches). At 5 rounds
+   chance separation drops to 1/252 per pair, about 0.3 pairs per run
+   before the thresholds apply.
+
 Self-test: `zig build test-bench-compare` (run by `quality-zig-gates`
 before the gate) replays the per-round rows from four CI jobs that failed
 on noise (`tests/fixtures/perf_gate_ci_noise.tsv`, 140 rows x 3 rounds)
@@ -120,7 +131,8 @@ recorded HEAD side in every round: +25% must fail on representative rows
 of every micro family in every job, and +50% must be caught on at least
 95% of rows above the floor (132/132 when written; +25%: 116/132; +15%:
 81/132, since a change smaller than the runner's round-to-round spread
-cannot be separated from noise with three rounds). `scripts/test_perf_rounds.py` covers the shell
+cannot be separated from noise with three rounds; five rounds narrow
+both ranges). `scripts/test_perf_rounds.py` covers the shell
 driver (alternating order, every pair compared, no synthesized rows).
 
 `scripts/perf-gate.sh` also enforces the Linux UDP batching guardrail as
