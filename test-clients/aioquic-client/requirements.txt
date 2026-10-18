@@ -1,1 +1,1 @@
-aioquic==1.3.0
+aioquic==1.6.1

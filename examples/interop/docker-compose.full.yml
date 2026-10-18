@@ -122,7 +122,7 @@ services:
 
   # quic-go implementation
   quic-go-server:
-    image: martenseemann/quic-go-interop@sha256:a7d744121f2d5df20021773ee0a9698b4cc8cbcf5035a7094662e84dcca28823
+    image: martenseemann/quic-go-interop@sha256:6e07249031e37b60bfdfe0dc9f9698685f9692cbf64c74b29480604971f4afae
     container_name: quic-go-server
     hostname: server
     stdin_open: true
@@ -151,7 +151,7 @@ services:
     - quic-go
 
   quic-go-client:
-    image: martenseemann/quic-go-interop@sha256:a7d744121f2d5df20021773ee0a9698b4cc8cbcf5035a7094662e84dcca28823
+    image: martenseemann/quic-go-interop@sha256:6e07249031e37b60bfdfe0dc9f9698685f9692cbf64c74b29480604971f4afae
     container_name: quic-go-client
     hostname: client
     stdin_open: true
