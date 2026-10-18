@@ -37,7 +37,13 @@ include:
   - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.55.8
 
   # Release
+  # job_token: create the release with CI_JOB_TOKEN. The default (glab)
+  # mode needs a GITLAB_TOKEN with api scope; the project's token lacks it,
+  # so create-release failed with 403 insufficient_scope on v0.1.45
+  # (pipeline 2960599429) and no tag since v0.1.11 got a GitLab release.
   - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.55.8
+    inputs:
+      release_auth: job_token
   - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.55.8
 
 stages:
