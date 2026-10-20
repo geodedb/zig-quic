@@ -2347,6 +2347,15 @@ pub fn build(b: *std.Build) void {
         const run_test_smoke = b.addRunArtifact(test_smoke);
         test_step.dependOn(&run_test_smoke.step);
 
+        // RFC 9001 §4.9.2: the client keeps its Handshake keys and the
+        // retransmit copy of its Finished until HANDSHAKE_DONE.
+        const test_client_hs_keys = addTst(b, testlog_mod, compat_mod, "tests/test_client_hs_key_retention.zig", target, optimize);
+        test_client_hs_keys.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);
+        test_client_hs_keys.root_module.addImport("quic_conn", quic_conn_mod);
+        test_client_hs_keys.root_module.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+        const run_test_client_hs_keys = b.addRunArtifact(test_client_hs_keys);
+        test_step.dependOn(&run_test_client_hs_keys.step);
+
         // FIPS-140-3 seam test: proves the crypto_backend seam is reachable
         // and resolves an approved SHA-256 KAT in BOTH -Dfips modes.
         const test_fips_seam = addTst(b, testlog_mod, compat_mod, "tests/fips_seam_test.zig", target, optimize);

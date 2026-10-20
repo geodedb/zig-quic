@@ -1648,8 +1648,13 @@ pub fn bind(comptime Connection: type) type {
                 // Server: wait for peer_finished_verified (client Finished received) AND first Handshake packet sent
                 (self.peer_finished_verified and self.handshake_packet_sent)
             else
-                // Client: drop after sending Finished AND first Handshake packet sent
-                (self.handshake_packet_sent);
+                // Client: never here. RFC 9001 §4.9.2: the client keeps its Handshake
+                // keys (and the Finished retransmission buffer) until the handshake is
+                // CONFIRMED, i.e. HANDSHAKE_DONE arrives (processShortHeader drops them).
+                // Dropping them on 1-RTT key install made a lost client Finished
+                // unrecoverable: the server never got 1-RTT keys and dropped every
+                // request packet the client sent.
+                false;
 
             if (can_drop_hs_keys) {
                 logger.debugPrint("{s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified });
