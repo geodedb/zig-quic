@@ -402,6 +402,28 @@ pub fn bind(comptime Connection: type) type {
                 return error.ShortWrite;
             }
 
+            // Keep the bytes for Handshake PTO retransmission
+            // (sendPtoProbeHandshake resends crypto_retx_handshake). This is
+            // the client's Finished path: without a retransmit copy, a lost
+            // client Finished left the server without 1-RTT keys for good,
+            // and every request the client sent was dropped. Extend a buffer
+            // that ends where this chunk starts; otherwise start a new one.
+            if (self.crypto_retx_handshake) |old_buf| {
+                if (self.crypto_retx_handshake_off + old_buf.len == self.crypto_tx_off_handshake) {
+                    if (self.allocator.realloc(old_buf, old_buf.len + crypto_data.len)) |grown| {
+                        @memcpy(grown[old_buf.len..], crypto_data);
+                        self.crypto_retx_handshake = grown;
+                    } else |_| {}
+                } else if (self.allocator.dupe(u8, crypto_data)) |fresh| {
+                    self.allocator.free(old_buf);
+                    self.crypto_retx_handshake = fresh;
+                    self.crypto_retx_handshake_off = self.crypto_tx_off_handshake;
+                } else |_| {}
+            } else if (self.allocator.dupe(u8, crypto_data)) |fresh| {
+                self.crypto_retx_handshake = fresh;
+                self.crypto_retx_handshake_off = self.crypto_tx_off_handshake;
+            } else |_| {}
+
             // Update state
             self.crypto_tx_off_handshake += crypto_data.len;
             // Mark that at least one Handshake packet has been transmitted.
