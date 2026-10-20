@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.46] - 2026-10-20
+
+### Fixed
+
+- Keep the client's Handshake keys and its Finished retransmission data until the handshake is confirmed (HANDSHAKE_DONE), per RFC 9001 §4.9.2. The client used to drop them as soon as it installed 1-RTT keys, so a lost client Finished could never be retransmitted: the server never got 1-RTT keys and dropped every request the client sent. The Handshake PTO probe now resends the Finished.
+
+### Security
+
+- Rust clients: rustls-webpki 0.103.16 (RUSTSEC-2026-0382) and webpki-root-certs 1.0.10 (RUSTSEC-2026-0383).
+
+### CI
+
+- `create-release` authenticates with the CI job token instead of `GITLAB_TOKEN`, so tag pipelines create the GitLab release.
+
 ## [0.1.45] - 2026-10-13
 
 ### Changed
