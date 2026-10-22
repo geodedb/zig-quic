@@ -24,27 +24,24 @@ default:
 
 include:
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.55.8
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.55.8
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.55.8
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.55.8
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@aad997d40e358eeef7ec943f761498341c37c724
 
   # Code quality
-  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.55.8
+  - component: gitlab.com/devnw/ci-catalog/zig-format@aad997d40e358eeef7ec943f761498341c37c724
 
   # SBOM
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.55.8
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.55.8
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@aad997d40e358eeef7ec943f761498341c37c724
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@aad997d40e358eeef7ec943f761498341c37c724
 
   # Release
   # job_token: create the release with CI_JOB_TOKEN. The default (glab)
   # mode needs a GITLAB_TOKEN with api scope; the project's token lacks it,
   # so create-release failed with 403 insufficient_scope on v0.1.45
   # (pipeline 2960599429) and no tag since v0.1.11 got a GitLab release.
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.55.8
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@aad997d40e358eeef7ec943f761498341c37c724
     inputs:
       release_auth: job_token
-  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.55.8
+  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@aad997d40e358eeef7ec943f761498341c37c724
 
 stages:
   - lint
@@ -109,11 +106,6 @@ variables:
 # root-owned copy landed last (pipelines 2933883902, 2936039032).
 # It also wasted scan time on .openssl-fips/ and zig-out/ binaries. The
 # analyzer only needs the checked-out source.
-gitlab-advanced-sast:
-  dependencies: []
-
-gitlab-advanced-sast-ext:
-  dependencies: []
 
 # zig-format component override: inject Zig install before format check
 zig-format:
@@ -393,7 +385,7 @@ e2e-test-python:
 
 e2e-test-go:
   stage: e2e
-  image: golang:1.27.2
+  image: golang:1.27.3
   tags:
     - company
     - linux
@@ -955,7 +947,7 @@ security-python-safety:
 
 security-go-govulncheck:
   stage: security
-  image: golang:1.27.2
+  image: golang:1.27.3
   tags:
     - company
     - linux
@@ -965,7 +957,7 @@ security-go-govulncheck:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   variables:
-    GOTOOLCHAIN: "go1.27.2"
+    GOTOOLCHAIN: "go1.27.3"
   script:
     - go version
     - for dir in examples/interop test-clients/quic-test-legacy/xnet-quic test-clients/quic-go-client test-clients/legacy-clients/go; do echo "Scanning $dir"; (cd "$dir" && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...); done
@@ -981,7 +973,7 @@ security-go-govulncheck:
 # Scheduled job to update Go dependencies for interop testing
 update-go-dependencies:
   stage: maintenance
-  image: golang:1.27.2
+  image: golang:1.27.3
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $UPDATE_GO_DEPS == "true"
   before_script:
