@@ -295,6 +295,7 @@ pub fn build(b: *std.Build) void {
     // Token module (Retry token encode/verify)
     const quic_token_mod = mkModule(b, "src/quic/token.zig");
     quic_token_mod.addImport("byteorder", byteorder_mod);
+    quic_token_mod.addImport("compat", compat_mod);
     quic_token_mod.addImport("crypto_backend", crypto_backend_mod);
 
     // Logger module for QUIC library (local QUIC logger, not vendored TLS logger)
@@ -523,6 +524,7 @@ pub fn build(b: *std.Build) void {
 
     const endpoint_timer_mod = mkModule(b, "src/quic/endpoint/timer.zig");
     endpoint_timer_mod.addImport("types", endpoint_types_mod);
+    endpoint_timer_mod.addImport("compat", compat_mod);
 
     const endpoint_lookup_mod = mkModule(b, "src/quic/endpoint/lookup.zig");
     endpoint_lookup_mod.addImport("types", endpoint_types_mod);
@@ -827,6 +829,7 @@ pub fn build(b: *std.Build) void {
     // High-level transport API module (single instance, public-facing)
     const transport_public = b.addModule("transport", .{ .root_source_file = b.path("src/quic/transport.zig") });
     transport_public.addImport("quic_api", quic_api_mod);
+    transport_public.addImport("compat", compat_mod);
     transport_public.addImport("quic_endpoint", quic_endpoint_mod);
     transport_public.addImport("quic_conn", quic_conn_mod);
     transport_public.addImport("quic_crypto", quic_crypto_mod);
@@ -960,6 +963,16 @@ pub fn build(b: *std.Build) void {
     const examples_step = b.step("examples", "Build transport layer examples");
     examples_step.dependOn(&install_client_transport.step);
     examples_step.dependOn(&install_server_transport.step);
+
+    // The native smoke lane exercises the same runtime helpers used by the
+    // endpoint, recovery timers, Retry tokens, and non-FIPS crypto backend.
+    const portable_runtime_test = addTst(b, testlog_mod, compat_mod, "tests/test_portable_runtime.zig", target, optimize);
+    portable_runtime_test.root_module.addImport("std_shim", std_shim_mod);
+    portable_runtime_test.root_module.addImport("sharding", algo_sharding_mod);
+    const run_portable_runtime_test = b.addRunArtifact(portable_runtime_test);
+    const portable_runtime_step = b.step("test-portable-runtime", "Test native clocks, sleep, and OS entropy");
+    portable_runtime_step.dependOn(&run_portable_runtime_test.step);
+    if (filter == null) test_step.dependOn(&run_portable_runtime_test.step);
 
     // Filtering
     if (filter) |f| {

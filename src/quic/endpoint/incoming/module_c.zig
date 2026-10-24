@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const logger = @import("quic_logger");
 const conn_mod = @import("quic_conn");
 const packet = @import("packet");
@@ -69,10 +70,7 @@ inline fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
 }
 
 inline fn timingNsMonotonic() i128 {
-    var ts: std.os.linux.timespec = undefined;
-    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-    if (rc != 0) return 0;
-    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    return compat.monotonicNanoTimestamp();
 }
 
 inline fn elapsedTimingNsSince(start_ns: i128) u64 {
@@ -562,12 +560,7 @@ pub fn processShortHeaderResolved(
 
     // Record ack-eliciting frame receipt for ACK generation
     if (frame_result.saw_ack_eliciting) {
-        const now_ns_ack: u64 = @intCast(blk: {
-            var ts: std.os.linux.timespec = undefined;
-            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-            if (rc != 0) break :blk @as(i128, 0);
-            break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-        });
+        const now_ns_ack: u64 = @intCast(compat.nanoTimestamp());
         conn.recordAppAckElicitingRx(now_ns_ack);
 
         if (ctx.test_capture_enabled) {

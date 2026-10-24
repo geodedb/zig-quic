@@ -802,6 +802,12 @@ runtime-smoke-macos-saas:
   tags:
     - saas-macos-medium-m1
   rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/quic/**/*
+        - src/fips_backend/std_shim.zig
+        - tests/test_portable_runtime.zig
+        - scripts/native_runtime_smoke.sh
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_TAG
