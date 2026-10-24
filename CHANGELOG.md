@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop freeing lost STREAM data before it is retransmitted. Recovery forgets a packet as soon as it declares it lost, so a lost packet and an acknowledged one looked the same to the "prune below largest ACK" pass, which then freed the lost data. A burst of losses bigger than the two-packets-per-ACK retransmit budget left a permanent hole in the stream, and the transfer stalled. This happened on hosts whose kernel caps the UDP receive buffer at about 212 KB (the Docker/AWS `net.core.rmem_max` default), where Geode `backup create` hung at 0%. Acknowledged STREAM packets are now released by ACK range membership, which also covers ACKs that span more than the 256 packet numbers passed to recovery.
+
 ## [0.1.46] - 2026-10-20
 
 ### Fixed
