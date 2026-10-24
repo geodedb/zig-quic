@@ -270,6 +270,94 @@ test "app ack time-threshold loss retransmits retained STREAM data" {
     try std.testing.expect(ep.captureLen() > 3);
 }
 
+fn setupAppStreamConn(ep: anytype) !*conn_mod.Connection {
+    const conn = try ep.connectClient("127.0.0.1:4433");
+    conn.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    conn.peer_finished_verified = true;
+    conn.address_validated = true;
+    conn.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, conn.peer_initial_scid.bytes[0..4], "PEER");
+    return conn;
+}
+
+// Regression (geode `backup create` stall on small SO_RCVBUF hosts): a burst
+// of lost STREAM packets larger than the per-ACK retransmit budget must stay
+// tracked until it is retransmitted. Recovery compacts lost packets away, so
+// they read as `.unknown`; the old cumulative prune freed them as if acked and
+// left a permanent hole in the stream.
+test "app ack burst loss retains every unretransmitted STREAM packet" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var allocator = gpa.allocator();
+
+    var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    cfg.enable_pacing = false;
+    cfg.initial_congestion_window_packets = 64;
+    var ep = try api.QuicEndpoint.initWithTransport(&allocator, NoopTransport.init(), &cfg, .Client);
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+    const conn = try setupAppStreamConn(&ep);
+
+    const sent_packets: u64 = 40;
+    var i: u64 = 0;
+    while (i < sent_packets) : (i += 1) {
+        try std.testing.expectEqual(@as(usize, 4), try conn.writeStream(0, "DATA", false));
+    }
+    try std.testing.expectEqual(sent_packets, conn.pn_app_tx);
+    try std.testing.expectEqual(@as(usize, sent_packets), conn.app_stream_retx.count());
+
+    // Peer received only the newest packet: PNs 0..38 are lost.
+    conn.onAckReceivedSpace(.Application, sent_packets - 1, 0, &.{}, null);
+
+    // The acked packet is dropped; every lost packet is either retransmitted
+    // (re-tracked under a new PN) or still waiting, never freed.
+    try std.testing.expectEqual(@as(usize, sent_packets - 1), conn.app_stream_retx.count());
+    var pn: u64 = 0;
+    var retransmitted: usize = 0;
+    while (pn < sent_packets - 1) : (pn += 1) {
+        if (!conn.app_stream_retx.contains(pn)) retransmitted += 1;
+    }
+    try std.testing.expectEqual(@as(u64, sent_packets + retransmitted), conn.pn_app_tx);
+}
+
+// Wide ACK ranges (more PNs than the 256-entry enumeration handed to
+// recovery) must still release every acknowledged STREAM packet.
+test "app ack wide range drops all acknowledged STREAM tracking" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var allocator = gpa.allocator();
+
+    var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    cfg.enable_pacing = false;
+    cfg.initial_congestion_window_packets = 1024;
+    var ep = try api.QuicEndpoint.initWithTransport(&allocator, NoopTransport.init(), &cfg, .Client);
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+    const conn = try setupAppStreamConn(&ep);
+
+    const sent_packets: u64 = 300;
+    var i: u64 = 0;
+    while (i < sent_packets) : (i += 1) {
+        try std.testing.expectEqual(@as(usize, 4), try conn.writeStream(0, "DATA", false));
+    }
+    try std.testing.expectEqual(@as(usize, sent_packets), conn.app_stream_retx.count());
+
+    // Two ranges: [150, 299] and [0, 147]; gap=1 skips PNs 148..149
+    // (RFC 9000 §19.3.1: largest = previous_smallest - gap - 2).
+    const ranges = [_]conn_mod.AckRange{.{ .gap = 1, .len = 147 }};
+    conn.onAckReceivedSpace(.Application, sent_packets - 1, 149, &ranges, null);
+
+    // Only the data of the two unacknowledged packets (148, 149) remains
+    // tracked, under its original PN or as a retransmission. Acknowledged
+    // packets must not be retransmitted spuriously.
+    try std.testing.expectEqual(@as(usize, 2), conn.app_stream_retx.count());
+    var it = conn.app_stream_retx.iterator();
+    while (it.next()) |entry| {
+        const off = entry.value_ptr.offset;
+        try std.testing.expect(off == 148 * 4 or off == 149 * 4);
+    }
+}
+
 test "app PTO send failure rearms retransmission timer" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();

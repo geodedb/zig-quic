@@ -1350,6 +1350,16 @@ pub fn build(b: *std.Build) void {
             const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
             test_step.dependOn(&run_test_h3_loop.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "small_rcvbuf")) {
+            const test_small_rcvbuf_only = addTst(b, testlog_mod, compat_mod, "tests/test_small_rcvbuf_bulk_stream.zig", target, optimize);
+            test_small_rcvbuf_only.root_module.addImport("quic_api", quic_api_mod);
+            test_small_rcvbuf_only.root_module.addImport("quic_config", quic_config_mod);
+            test_small_rcvbuf_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_small_rcvbuf_only.root_module.addImport("test_certs", test_certs_mod);
+            test_small_rcvbuf_only.root_module.addImport("quic_build_options", build_options_mod);
+            const run_test_small_rcvbuf_only = b.addRunArtifact(test_small_rcvbuf_only);
+            test_step.dependOn(&run_test_small_rcvbuf_only.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "concurrent_load")) {
             const test_concurrent_load_only = addTst(b, testlog_mod, compat_mod, "tests/test_concurrent_load.zig", target, optimize);
             test_concurrent_load_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
@@ -2525,6 +2535,26 @@ pub fn build(b: *std.Build) void {
         test_long_response_stream_stall.root_module.addImport("quic_endpoint", quic_endpoint_mod);
         const run_test_long_response_stream_stall = b.addRunArtifact(test_long_response_stream_stall);
         test_step.dependOn(&run_test_long_response_stream_stall.step);
+
+        // Regression: bulk (1 MiB) single-stream transfer with the
+        // receiver's SO_RCVBUF clamped to the Docker/AWS default
+        // (~212 KB). Datagram loss at the receiver socket must be
+        // recovered; pre-fix the transfer stalled (geode backup create).
+        const test_small_rcvbuf_bulk_stream = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_small_rcvbuf_bulk_stream.zig",
+            target,
+            optimize,
+        );
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_api", quic_api_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_config", quic_config_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("test_certs", test_certs_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_build_options", build_options_mod);
+        const run_test_small_rcvbuf_bulk_stream = b.addRunArtifact(test_small_rcvbuf_bulk_stream);
+        test_step.dependOn(&run_test_small_rcvbuf_bulk_stream.step);
 
         const test_high_parallel_stream_progress = addTst(
             b,
