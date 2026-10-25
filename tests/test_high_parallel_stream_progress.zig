@@ -180,19 +180,24 @@ const ClientCtx = struct {
     fail_counter: *std.atomic.Value(u32),
 };
 
+fn recordFailure(ctx: ClientCtx, phase: []const u8) void {
+    std.debug.print("high-parallel client {d} failed at {s}\n", .{ ctx.index, phase });
+    _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+}
+
 fn clientThread(ctx: ClientCtx) void {
     var cli_cfg = cfg.QuicConfig{
         .alpn = &test_alpn,
         .allow_insecure = true,
     };
     var ep = endpoint_mod.Endpoint.init(ctx.allocator, "127.0.0.1:0", &cli_cfg) catch {
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "endpoint init");
         return;
     };
     defer ep.deinit();
 
     const conn = api.connect(&ep, ctx.server_addr, SERVER_SNI) catch {
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "connect");
         return;
     };
 
@@ -201,7 +206,7 @@ fn clientThread(ctx: ClientCtx) void {
         _ = ep.pollWithStats(1) catch {};
     }
     if (!api.isHandshakeConfirmed(conn)) {
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "handshake deadline");
         return;
     }
 
@@ -209,7 +214,7 @@ fn clientThread(ctx: ClientCtx) void {
     for (&payload, 0..) |*b, i| b.* = @truncate(i + ctx.index);
 
     const sid = api.openStream(conn, true) catch {
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "open stream");
         return;
     };
 
@@ -217,11 +222,11 @@ fn clientThread(ctx: ClientCtx) void {
     var sent: usize = 0;
     while (sent < payload.len) {
         if (nowMs() >= rt_deadline) {
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "send deadline");
             return;
         }
         const n = api.writeStream(conn, sid, payload[sent..], false) catch {
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "stream write");
             return;
         };
         if (n == 0) {
@@ -232,7 +237,7 @@ fn clientThread(ctx: ClientCtx) void {
     }
 
     _ = api.writeStream(conn, sid, &[_]u8{}, true) catch {
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "send FIN");
         return;
     };
 
@@ -242,7 +247,7 @@ fn clientThread(ctx: ClientCtx) void {
         _ = ep.pollWithStats(1) catch {};
         const n = api.readStream(conn, sid, &recv_scratch) catch |err| {
             if (err == error.WouldBlock) continue;
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "stream read");
             return;
         };
         if (n == 0) {
@@ -255,12 +260,12 @@ fn clientThread(ctx: ClientCtx) void {
             continue;
         }
         if (received + n > payload.len) {
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "echo length");
             return;
         }
         for (recv_scratch[0..n], 0..) |b, i| {
             if (b != payload[received + i]) {
-                _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+                recordFailure(ctx, "echo content");
                 return;
             }
         }
@@ -273,7 +278,7 @@ fn clientThread(ctx: ClientCtx) void {
         }
     }
 
-    _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+    recordFailure(ctx, "echo or peer FIN deadline");
 }
 
 test "high-parallel connections complete stream echo and FIN without blocking" {
