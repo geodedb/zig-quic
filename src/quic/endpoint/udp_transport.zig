@@ -352,13 +352,16 @@ pub const UdpTransport = struct {
         var actual_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
         if (std.c.getsockname(fd, @ptrCast(&actual_addr), &actual_len) < 0) return error.GetSockNameFailed;
 
-        // Best-effort non-blocking via fcntl; some platforms expose only SOCK_NONBLOCK
-        // at socket() time which is not portable to all targets we care about.
+        // The receive loop requires a non-blocking descriptor. SOCK.NONBLOCK
+        // is a socket-creation flag (a Zig-only shim on Darwin), not an F_SETFL
+        // flag; using it here can leave recvfrom blocked after draining a batch.
         // `fcntlCmd` handles the per-OS shape divergence of `std.c.F`
         // (enum on Linux; struct of `pub const comptime_int` on macOS/BSD).
         const flags = std.c.fcntl(fd, fcntlCmd(std.c.F.GETFL), @as(c_int, 0));
-        if (flags >= 0) {
-            _ = std.c.fcntl(fd, fcntlCmd(std.c.F.SETFL), flags | @as(c_int, @intCast(posix.SOCK.NONBLOCK)));
+        if (flags < 0) return error.FcntlFailed;
+        const nonblock: c_int = @bitCast(std.c.O{ .NONBLOCK = true });
+        if (std.c.fcntl(fd, fcntlCmd(std.c.F.SETFL), flags | nonblock) < 0) {
+            return error.FcntlFailed;
         }
 
         return UdpTransport{

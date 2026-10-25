@@ -29,6 +29,7 @@
 //! from RFC 9002 (§6). TLS credential loading follows RFC 9001 §4 requirements.
 
 const std = @import("std");
+const compat = @import("compat");
 const cfg = @import("config.zig");
 const lb = @import("loop_backend.zig");
 const conn_mod = @import("quic_conn");
@@ -271,11 +272,8 @@ inline fn addrToNetwork(value: u32) u32 {
 }
 
 fn nowNsMonotonic() i128 {
-    // Use clock_gettime for monotonic time (Zig 0.16 removed std.time.nanoTimestamp).
-    var ts: std.os.linux.timespec = undefined;
-    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-    if (rc != 0) return 0;
-    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    // Keep the wall-clock domain used by the connection and recovery deadlines.
+    return compat.nanoTimestamp();
 }
 
 fn elapsedNsSince(start_ns: i128) u64 {

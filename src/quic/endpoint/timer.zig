@@ -7,6 +7,7 @@
 //! RFC 9000 §14.2: Path MTU Discovery timers
 
 const std = @import("std");
+const compat = @import("compat");
 const types = @import("types");
 
 /// Timer management state for the endpoint.
@@ -118,12 +119,7 @@ pub const TimerManager = struct {
 };
 
 fn nowMsMonotonic() i64 {
-    const ns: i128 = blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    };
+    const ns: i128 = compat.nanoTimestamp();
     const ms: i128 = @divTrunc(ns, std.time.ns_per_ms);
     return @as(i64, @intCast(ms));
 }
