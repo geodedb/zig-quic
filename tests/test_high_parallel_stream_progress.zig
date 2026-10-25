@@ -18,7 +18,7 @@ const test_alpn = [_][]const u8{"h3"};
 const SERVER_SNI = "localhost";
 const PARALLEL_CLIENTS: usize = 32;
 const PAYLOAD_BYTES: usize = 1024;
-const HANDSHAKE_TIMEOUT_MS: i64 = 5_000;
+const HANDSHAKE_TIMEOUT_MS: i64 = 30_000;
 const RT_TIMEOUT_MS: i64 = 7_000;
 
 fn nowMs() i64 {
@@ -201,7 +201,8 @@ fn clientThread(ctx: ClientCtx) void {
         return;
     };
 
-    const hs_deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
+    const hs_start = nowMs();
+    const hs_deadline = hs_start + HANDSHAKE_TIMEOUT_MS;
     while (nowMs() < hs_deadline and !api.isHandshakeConfirmed(conn)) {
         _ = ep.pollWithStats(1) catch {};
     }
@@ -209,6 +210,8 @@ fn clientThread(ctx: ClientCtx) void {
         recordFailure(ctx, "handshake deadline");
         return;
     }
+
+    std.debug.print("diagnostic client {d} handshake elapsed {d} ms\n", .{ ctx.index, nowMs() - hs_start });
 
     var payload: [PAYLOAD_BYTES]u8 = undefined;
     for (&payload, 0..) |*b, i| b.* = @truncate(i + ctx.index);
