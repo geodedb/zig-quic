@@ -1,5 +1,5 @@
 # Core dependencies for QUIC Python test client
-aioquic==1.6.1
+aioquic==1.7.0
 
 # Development dependencies (optional)
 pytest==9.1.1

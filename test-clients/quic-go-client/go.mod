@@ -1,8 +1,8 @@
 module quic-go-test-client
 
-go 1.27.2
+go 1.27.3
 
-require github.com/quic-go/quic-go v0.63.0
+require github.com/quic-go/quic-go v0.64.1
 
 require (
 	go.uber.org/mock v0.6.0 // indirect
