@@ -258,6 +258,10 @@ test-fips:
     - grep -q "^\.include ${FIPS_PREFIX}/ssl/fipsmodule\.cnf\$" "$FIPS_PREFIX/ssl/openssl.cnf"
     - FIPS_LIBDIR="$FIPS_PREFIX/lib64"; [ -d "$FIPS_LIBDIR/ossl-modules" ] || FIPS_LIBDIR="$FIPS_PREFIX/lib"
     - export OPENSSL_MODULES="$FIPS_LIBDIR/ossl-modules" LD_LIBRARY_PATH="$FIPS_LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # The system OpenSSL 3.0 CLI crashes during certificate generation when
+    # loaded with the artifact's 3.6 libraries. Use its matching CLI as well.
+    - export PATH="$FIPS_PREFIX/bin:$PATH"
+    - OPENSSL_PREFIX="$FIPS_PREFIX" bash scripts/verify-fips-provider.sh
   script:
     - OPENSSL_CONF="$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf" zig build test -j2 -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
 

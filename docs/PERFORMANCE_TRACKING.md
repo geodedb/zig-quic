@@ -337,3 +337,86 @@ Capture digests (raw measurements retained with the validation record):
 | `HEAD-current.r3.json` | `80f8df2ab4e2fc10c2bcb30f7e59c48af9dd590ae7ba43dcd2ac6bcef229f75c` |
 
 </content>
+
+### 2026-10-25 — Native macOS nonblocking UDP and current-main qualification
+
+Native macOS execution exposed a receive stall: the POSIX initializer passed
+`SOCK.NONBLOCK` to `fcntl(F_SETFL)`. On Darwin this is a socket-creation shim,
+not `O.NONBLOCK`. Use the descriptor flag and return configuration errors.
+The regression reads the actual descriptor flags and checks that an empty
+batch returns `WouldBlock`, so this defect fails promptly instead of hanging.
+
+The regression-only native macOS job 17446899227 failed both descriptor-flag
+assertions. With fix `181c6819b4358ca71662247b2eced1ef94e7a370`, native job
+17446929632 passed portable runtime 5/5 (18.9s), UDP 4/7 (three Linux-only skips,
+2.0s), and Geode transport 9/9 (8.0s). These are runtime checks on aarch64 macOS.
+The fixed native Linux suite passed 144/146 tests (two skips), all 36 build
+steps, in 41.54s. Smoke CI now reports each phase and has a 15-minute timeout.
+
+After integrating current main, the canonical UDP integration gate compared
+`f880a7c9c41b00ce6621cc78aad0323d5f9e369a` against
+`e9e643447fd7bd00fb66fb0ec2b28d84716f56eb` using three alternating pairs:
+
+```sh
+PERF_GATE_ROUNDS=3 taskset -c 0,1 bash scripts/perf-gate.sh \
+  --baseline-commit=e9e643447fd7bd00fb66fb0ec2b28d84716f56eb \
+  --suite=integration/udp_batch
+```
+
+All six Linux captures identify those exact commits and contain both UDP rows.
+The sole other owned local compiler was paused throughout measurement.
+The gate exited 0 in 166.64s: zero reproduced failures and one non-reproduced
+warning. Batch/single ratios were 1.3978, 1.5802, and 1.5526, above the unchanged
+0.95 floor. The first-round latency failure is retained below. This measures
+Linux non-regression; it makes no macOS performance claim. The earlier full
+integration gate above remains evidence for the earlier runtime source.
+
+### Round 1/3: baseline=benchmarks/results/paired/e9e64344-baseline.r1.json current=benchmarks/results/paired/HEAD-current.r1.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/udp_batch | single | integration | 195866.0 | 198382.7 | +1.28% | 5812 | 4446 | -23.50% | PASS |
+| integration/udp_batch | batch | integration | 311626.8 | 277297.1 | -11.02% | 4025 | 6416 | +59.40% | FAIL |
+
+Round 1 summary: 1 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 2/3: baseline=benchmarks/results/paired/e9e64344-baseline.r2.json current=benchmarks/results/paired/HEAD-current.r2.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/udp_batch | single | integration | 198311.1 | 199726.7 | +0.71% | 6133 | 4488 | -26.82% | PASS |
+| integration/udp_batch | batch | integration | 308652.6 | 315600.8 | +2.25% | 4727 | 3986 | -15.68% | PASS |
+
+Round 2 summary: 0 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 3/3: baseline=benchmarks/results/paired/e9e64344-baseline.r3.json current=benchmarks/results/paired/HEAD-current.r3.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/udp_batch | single | integration | 193103.7 | 197772.6 | +2.42% | 7212 | 6502 | -9.84% | PASS |
+| integration/udp_batch | batch | integration | 312185.6 | 307062.2 | -1.64% | 4041 | 4473 | +10.69% | PASS |
+
+Round 3 summary: 0 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Reproduction across 3 rounds
+
+A row FAILs only if EVERY HEAD round is worse than EVERY baseline round (sep = ranges do not overlap)
+and the median-to-median change exceeds the tier threshold and the absolute floor.
+ABSOLUTE-FAIL needs a strict majority of rounds. Rows that never left PASS/NOISE are omitted.
+
+| scenario | variant | ops/s med base | ops/s med cur | delta% | sep | p95 med base | p95 med cur | delta% | sep | FAIL/WARN rounds | verdict |
+|---|---|---:|---:|---:|---|---:|---:|---:|---|---|---|
+| integration/udp_batch | batch | 311626.8 | 307062.2 | -1.46% | no | 4041.0 | 4473.0 | +10.69% | no | 1/0 of 3 | NOT-REPRODUCED |
+
+Summary: 0 FAIL (reproduced), 1 WARN (not reproduced across 3 rounds)
+
+Capture digests:
+
+| capture | SHA-256 |
+|---|---|
+| `e9e64344-baseline.r1.json` | `107141c4a457fd0716d48d4b9eabeda3fc7e7f929a6f9e58d28876f97223105e` |
+| `e9e64344-baseline.r2.json` | `1e7869bfee4d69ad991b557a180f43dd62a67405c1d9051e1a7cd681cd058acb` |
+| `e9e64344-baseline.r3.json` | `e8ea57ec4ca92a3ac3bdb7d9d56556b1e79f14a96d087ac2e0dff2a480d46047` |
+| `HEAD-current.r1.json` | `7edc1af9f8ad90663aa5b2dbb3249fd729bcbdf86a86d70d295ba815949fe7eb` |
+| `HEAD-current.r2.json` | `dcb26045d65ed3c877e4deda96631c0bfb10d037f151a44b0c134cf413cdf8c3` |
+| `HEAD-current.r3.json` | `fabf664802db2060c681ae710be5d7e63be406b7d7f5a380e07453587bd6c6ea` |
