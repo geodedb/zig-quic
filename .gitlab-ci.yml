@@ -802,6 +802,7 @@ runtime-smoke-macos-saas:
   stage: test
   # Installs its own toolchain and uses no Linux build/FIPS artifacts.
   needs: []
+  timeout: 15m
   image: macos-15-xcode-16
   tags:
     - saas-macos-medium-m1
