@@ -265,4 +265,75 @@ ISO-8601 `YYYY-MM-DD`.
   variant still regressed Geode's accepted 4096 single-op gate to 3053/4096
   first-response timeouts. The follow-up revert restores the proven
   `a68d36e`/`9a35274` behavior.
+
+### 2026-10-25 — Portable runtime qualification on v0.1.47
+
+The runtime repair centralizes realtime/monotonic clocks, sleeping and entropy
+while retaining Linux syscall paths. Native Linux and the complete macOS
+transport module graph were checked on source `a2e95831fd59b404395e7b4648d9e6e8b11ad12b`
+against parent `3ca1e9fc9a4b515cb9ed3fd5b3a3a6af4c38fcd1`. Native macOS execution
+is still required in CI; semantic compilation does not establish runtime behavior.
+
+The canonical integration gate ran three alternating baseline/current pairs with
+Zig 0.16.0, on the same host with both processes restricted to CPUs 0 and 1:
+
+```sh
+taskset -c 0,1 bash scripts/perf-gate.sh \
+  --baseline-commit=3ca1e9fc9a4b515cb9ed3fd5b3a3a6af4c38fcd1 --suite=integration
+```
+
+All six captures contain 38 rows and identify their exact source commit. The
+baseline fixture wrapper supplied the same ignored test certificates to both
+revisions. No concurrent local build, application test, or benchmark suite ran
+during measurement. This remains a shared-host measurement, not an isolated-host
+speedup claim. No gate thresholds were changed or overridden.
+
+The gate exited 0: **zero reproduced failures and 19 non-reproduced warnings**.
+Individual-round failures remain visible in the full review tables. UDP batch
+speedups were **1.5543, 1.5880, and 1.6098**, all above the unchanged 0.95 floor.
+The native full test run passed 144/146 tests with two reported skips (36/36 build
+steps); portable runtime 5/5, UDP smoke 6/6, and real Geode transport 9/9 passed.
+The aarch64-macos transport graph passed semantic compilation.
+
+### Reproduction across 3 rounds
+
+A row FAILs only if EVERY HEAD round is worse than EVERY baseline round (sep = ranges do not overlap)
+and the median-to-median change exceeds the tier threshold and the absolute floor.
+ABSOLUTE-FAIL needs a strict majority of rounds. Rows that never left PASS/NOISE are omitted.
+
+| scenario | variant | ops/s med base | ops/s med cur | delta% | sep | p95 med base | p95 med cur | delta% | sep | FAIL/WARN rounds | verdict |
+|---|---|---:|---:|---:|---|---:|---:|---:|---|---|---|
+| integration/udp_batch | single | 188380.2 | 197663.2 | +4.93% | no | 4837.0 | 4460.0 | -7.79% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 1c | 98989.6 | 97454.6 | -1.55% | no | 9464.0 | 10076.0 | +6.47% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 10c | 99304.4 | 98418.0 | -0.89% | no | 9434.0 | 9447.0 | +0.14% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 100c | 98564.9 | 97467.2 | -1.11% | no | 9442.0 | 9478.0 | +0.38% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 10Kc | 21717.2 | 21365.8 | -1.62% | yes | 180719.0 | 195397.0 | +8.12% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 20Kc | 5620.3 | 5437.3 | -3.26% | yes | 195750.0 | 219500.0 | +12.13% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1c | 84363980.0 | 81479670.8 | -3.42% | no | 9346.0 | 9642.0 | +3.17% | yes | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 10c | 4748574.8 | 4717181.4 | -0.66% | no | 9414.0 | 13025.0 | +38.36% | no | 2/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 100c | 132231.4 | 128863.4 | -2.55% | no | 9287.0 | 11965.0 | +28.84% | no | 2/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1Kc | 4651.8 | 4537.7 | -2.45% | no | 9311.0 | 9334.0 | +0.25% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1Kc-100s | 2303.0 | 2308.7 | +0.25% | no | 116837.0 | 107117.0 | -8.32% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 10Kc | 114.4 | 113.6 | -0.76% | no | 214898.0 | 211374.0 | -1.64% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 10Kc-10s | 114.2 | 114.4 | +0.15% | no | 201620.0 | 198107.0 | -1.74% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 20Kc | 22.8 | 22.9 | +0.71% | no | 195989.0 | 208081.0 | +6.17% | yes | 1/0 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | serial | 539.5 | 517.8 | -4.01% | no | 2124849.0 | 2175310.0 | +2.37% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | 10p | 626.3 | 615.3 | -1.76% | no | 16580811.0 | 19040977.0 | +14.84% | no | 0/2 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | 100p | 353.9 | 352.7 | -0.36% | no | 206752575.0 | 204111448.0 | -1.28% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | batch_64 | 6045.5 | 6212.7 | +2.76% | no | 904431.0 | 1022976.0 | +13.11% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | concurrent_independent_progress | 35903.7 | 37675.2 | +4.93% | no | 813250.0 | 1206027.0 | +48.30% | no | 2/1 of 3 | NOT-REPRODUCED |
+
+Summary: 0 FAIL (reproduced), 19 WARN (not reproduced across 3 rounds)
+
+Capture digests (raw measurements retained with the validation record):
+
+| capture | SHA-256 |
+|---|---|
+| `3ca1e9fc-baseline.r1.json` | `993d50ef3ea48f2964881a41f2c3a03087597bf364d30806ab9eee5739fff8c3` |
+| `3ca1e9fc-baseline.r2.json` | `7ef52486e8f090a7395ee16166fd48bc475e62f36d21ba75d9f05b0c50efb045` |
+| `3ca1e9fc-baseline.r3.json` | `da6673663d1e5e1af161b71bca8cc668e159c663e7f0953abaef8606eb1073fb` |
+| `HEAD-current.r1.json` | `70544060dacc2405ee524186a762ae97b09fa1d3b3bf002cae15561bac7bd8c1` |
+| `HEAD-current.r2.json` | `e693d948e37d1fe88f1d6bf22641799c465435dbbb00247a68ebfcf030fda3e9` |
+| `HEAD-current.r3.json` | `80f8df2ab4e2fc10c2bcb30f7e59c48af9dd590ae7ba43dcd2ac6bcef229f75c` |
+
 </content>
