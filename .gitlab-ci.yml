@@ -185,7 +185,9 @@ test:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test --summary all
+    # Bound competing test executables so the 32-client progress regression
+    # retains CPU time on shared runners; its own concurrency stays unchanged.
+    - zig build test -j2 --summary all
 
 # FIPS-140-3 dual-mode gate (-Dfips=true), same pattern as devnw/zig/fts-storage.
 #
@@ -257,7 +259,7 @@ test-fips:
     - FIPS_LIBDIR="$FIPS_PREFIX/lib64"; [ -d "$FIPS_LIBDIR/ossl-modules" ] || FIPS_LIBDIR="$FIPS_PREFIX/lib"
     - export OPENSSL_MODULES="$FIPS_LIBDIR/ossl-modules" LD_LIBRARY_PATH="$FIPS_LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   script:
-    - OPENSSL_CONF="$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf" zig build test -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
+    - OPENSSL_CONF="$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf" zig build test -j2 -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
 
 test-release-safe:
   stage: test
@@ -282,7 +284,7 @@ test-release-safe:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseSafe --summary all
+    - zig build test -j2 -Doptimize=ReleaseSafe --summary all
 
 test-release-fast:
   stage: test
@@ -307,7 +309,7 @@ test-release-fast:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseFast --summary all
+    - zig build test -j2 -Doptimize=ReleaseFast --summary all
 
 test-release-small:
   stage: test
@@ -335,7 +337,7 @@ test-release-small:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseSmall --summary all
+    - zig build test -j2 -Doptimize=ReleaseSmall --summary all
 
 e2e-test-python:
   stage: e2e
@@ -798,6 +800,8 @@ stress-integration-20x:
 
 runtime-smoke-macos-saas:
   stage: test
+  # Installs its own toolchain and uses no Linux build/FIPS artifacts.
+  needs: []
   image: macos-15-xcode-16
   tags:
     - saas-macos-medium-m1
