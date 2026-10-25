@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const tls13 = @import("quic_tls13");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -454,12 +455,7 @@ pub fn bind(comptime Connection: type) type {
 
             if (cur_off >= peer_stream_limit) {
                 // Signal STREAM_DATA_BLOCKED and re-emit periodically while blocked.
-                const now_ns = blk: {
-                    var ts: std.os.linux.timespec = undefined;
-                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                    if (rc != 0) break :blk @as(i128, 0);
-                    break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                };
+                const now_ns = compat.nanoTimestamp();
                 if (self.last_stream_data_blocked_limit != peer_stream_limit or
                     now_ns - self.last_stream_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
                 {
@@ -477,12 +473,7 @@ pub fn bind(comptime Connection: type) type {
             // Enforce connection-level MAX_DATA
             if (self.conn_send_off >= peer_conn_limit) {
                 // Signal DATA_BLOCKED and re-emit periodically while blocked.
-                const now_ns = blk2: {
-                    var ts: std.os.linux.timespec = undefined;
-                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                    if (rc != 0) break :blk2 @as(i128, 0);
-                    break :blk2 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                };
+                const now_ns = compat.nanoTimestamp();
                 if (self.last_data_blocked_limit != peer_conn_limit or
                     now_ns - self.last_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
                 {
@@ -553,12 +544,7 @@ pub fn bind(comptime Connection: type) type {
             // the next step.
             const include_app_ack = self.pn_app.have_any;
             if (include_app_ack) {
-                const now_ns: u64 = @intCast(blk3: {
-                    var ts: std.os.linux.timespec = undefined;
-                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                    if (rc != 0) break :blk3 @as(i128, 0);
-                    break :blk3 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                });
+                const now_ns: u64 = @intCast(compat.nanoTimestamp());
                 const ad = self.buildAckApp();
                 const ack_delay = self.getAckDelayEncoded(.Application, now_ns);
                 const ack_ecn = self.getAckEcn(.Application);
@@ -948,12 +934,7 @@ pub fn bind(comptime Connection: type) type {
                 dropAckedStreamTracking(self, ackedIntervals(largest, first_range, ranges, &interval_buf));
             }
             // Update recovery for given space
-            const now_i = blk4: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk4 @as(i128, 0);
-                break :blk4 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
             if (res.bytes_acked > 0) {
@@ -1052,12 +1033,7 @@ pub fn bind(comptime Connection: type) type {
             // Fast path: skip syscall + computation if timer already armed
             if (self.pto_app_active) return;
             // Use Recovery to compute PTO deadline for Application space only
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Application, now_ns);
             if (next_deadline == null) return;
@@ -1134,12 +1110,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
             // Fast path: skip syscall + computation if already armed or keys dropped
             if (self.pto_initial_active or self.initial_keys_dropped) return;
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Initial, now_ns);
             if (next_deadline == null) return;
@@ -1157,12 +1128,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.pto_handshake_active) return;
             // Skip if handshake TX keys are already dropped (connection is established)
             if (self.hs_tx_keys == null and self.app_tx_keys != null) return;
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Handshake, now_ns);
             if (next_deadline == null) return;

@@ -265,4 +265,158 @@ ISO-8601 `YYYY-MM-DD`.
   variant still regressed Geode's accepted 4096 single-op gate to 3053/4096
   first-response timeouts. The follow-up revert restores the proven
   `a68d36e`/`9a35274` behavior.
+
+### 2026-10-25 — Portable runtime qualification on v0.1.47
+
+The runtime repair centralizes realtime/monotonic clocks, sleeping and entropy
+while retaining Linux syscall paths. Native Linux and the complete macOS
+transport module graph were checked on source `a2e95831fd59b404395e7b4648d9e6e8b11ad12b`
+against parent `3ca1e9fc9a4b515cb9ed3fd5b3a3a6af4c38fcd1`. Native macOS execution
+is still required in CI; semantic compilation does not establish runtime behavior.
+
+The canonical integration gate ran three alternating baseline/current pairs with
+Zig 0.16.0, on the same host with both processes restricted to CPUs 0 and 1:
+
+```sh
+taskset -c 0,1 bash scripts/perf-gate.sh \
+  --baseline-commit=3ca1e9fc9a4b515cb9ed3fd5b3a3a6af4c38fcd1 --suite=integration
+```
+
+All six captures contain 38 rows and identify their exact source commit. The
+baseline fixture wrapper supplied the same ignored test certificates to both
+revisions. No concurrent local build, application test, or benchmark suite ran
+during measurement. This remains a shared-host measurement, not an isolated-host
+speedup claim. No gate thresholds were changed or overridden.
+
+The gate exited 0: **zero reproduced failures and 19 non-reproduced warnings**.
+Individual-round failures remain visible in the full review tables. UDP batch
+speedups were **1.5543, 1.5880, and 1.6098**, all above the unchanged 0.95 floor.
+The native full test run passed 144/146 tests with two reported skips (36/36 build
+steps); portable runtime 5/5, UDP smoke 6/6, and real Geode transport 9/9 passed.
+The aarch64-macos transport graph passed semantic compilation.
+
+### Reproduction across 3 rounds
+
+A row FAILs only if EVERY HEAD round is worse than EVERY baseline round (sep = ranges do not overlap)
+and the median-to-median change exceeds the tier threshold and the absolute floor.
+ABSOLUTE-FAIL needs a strict majority of rounds. Rows that never left PASS/NOISE are omitted.
+
+| scenario | variant | ops/s med base | ops/s med cur | delta% | sep | p95 med base | p95 med cur | delta% | sep | FAIL/WARN rounds | verdict |
+|---|---|---:|---:|---:|---|---:|---:|---:|---|---|---|
+| integration/udp_batch | single | 188380.2 | 197663.2 | +4.93% | no | 4837.0 | 4460.0 | -7.79% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 1c | 98989.6 | 97454.6 | -1.55% | no | 9464.0 | 10076.0 | +6.47% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 10c | 99304.4 | 98418.0 | -0.89% | no | 9434.0 | 9447.0 | +0.14% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 100c | 98564.9 | 97467.2 | -1.11% | no | 9442.0 | 9478.0 | +0.38% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 10Kc | 21717.2 | 21365.8 | -1.62% | yes | 180719.0 | 195397.0 | +8.12% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 20Kc | 5620.3 | 5437.3 | -3.26% | yes | 195750.0 | 219500.0 | +12.13% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1c | 84363980.0 | 81479670.8 | -3.42% | no | 9346.0 | 9642.0 | +3.17% | yes | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 10c | 4748574.8 | 4717181.4 | -0.66% | no | 9414.0 | 13025.0 | +38.36% | no | 2/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 100c | 132231.4 | 128863.4 | -2.55% | no | 9287.0 | 11965.0 | +28.84% | no | 2/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1Kc | 4651.8 | 4537.7 | -2.45% | no | 9311.0 | 9334.0 | +0.25% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1Kc-100s | 2303.0 | 2308.7 | +0.25% | no | 116837.0 | 107117.0 | -8.32% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 10Kc | 114.4 | 113.6 | -0.76% | no | 214898.0 | 211374.0 | -1.64% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 10Kc-10s | 114.2 | 114.4 | +0.15% | no | 201620.0 | 198107.0 | -1.74% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 20Kc | 22.8 | 22.9 | +0.71% | no | 195989.0 | 208081.0 | +6.17% | yes | 1/0 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | serial | 539.5 | 517.8 | -4.01% | no | 2124849.0 | 2175310.0 | +2.37% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | 10p | 626.3 | 615.3 | -1.76% | no | 16580811.0 | 19040977.0 | +14.84% | no | 0/2 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | 100p | 353.9 | 352.7 | -0.36% | no | 206752575.0 | 204111448.0 | -1.28% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | batch_64 | 6045.5 | 6212.7 | +2.76% | no | 904431.0 | 1022976.0 | +13.11% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | concurrent_independent_progress | 35903.7 | 37675.2 | +4.93% | no | 813250.0 | 1206027.0 | +48.30% | no | 2/1 of 3 | NOT-REPRODUCED |
+
+Summary: 0 FAIL (reproduced), 19 WARN (not reproduced across 3 rounds)
+
+Capture digests (raw measurements retained with the validation record):
+
+| capture | SHA-256 |
+|---|---|
+| `3ca1e9fc-baseline.r1.json` | `993d50ef3ea48f2964881a41f2c3a03087597bf364d30806ab9eee5739fff8c3` |
+| `3ca1e9fc-baseline.r2.json` | `7ef52486e8f090a7395ee16166fd48bc475e62f36d21ba75d9f05b0c50efb045` |
+| `3ca1e9fc-baseline.r3.json` | `da6673663d1e5e1af161b71bca8cc668e159c663e7f0953abaef8606eb1073fb` |
+| `HEAD-current.r1.json` | `70544060dacc2405ee524186a762ae97b09fa1d3b3bf002cae15561bac7bd8c1` |
+| `HEAD-current.r2.json` | `e693d948e37d1fe88f1d6bf22641799c465435dbbb00247a68ebfcf030fda3e9` |
+| `HEAD-current.r3.json` | `80f8df2ab4e2fc10c2bcb30f7e59c48af9dd590ae7ba43dcd2ac6bcef229f75c` |
+
 </content>
+
+### 2026-10-25 — Native macOS nonblocking UDP and current-main qualification
+
+Native macOS execution exposed a receive stall: the POSIX initializer passed
+`SOCK.NONBLOCK` to `fcntl(F_SETFL)`. On Darwin this is a socket-creation shim,
+not `O.NONBLOCK`. Use the descriptor flag and return configuration errors.
+The regression reads the actual descriptor flags and checks that an empty
+batch returns `WouldBlock`, so this defect fails promptly instead of hanging.
+
+The regression-only native macOS job 17446899227 failed both descriptor-flag
+assertions. With fix `181c6819b4358ca71662247b2eced1ef94e7a370`, native job
+17446929632 passed portable runtime 5/5 (18.9s), UDP 4/7 (three Linux-only skips,
+2.0s), and Geode transport 9/9 (8.0s). These are runtime checks on aarch64 macOS.
+The fixed native Linux suite passed 144/146 tests (two skips), all 36 build
+steps, in 41.54s. Smoke CI now reports each phase and has a 15-minute timeout.
+
+After integrating current main, the canonical UDP integration gate compared
+`f880a7c9c41b00ce6621cc78aad0323d5f9e369a` against
+`e9e643447fd7bd00fb66fb0ec2b28d84716f56eb` using three alternating pairs:
+
+```sh
+PERF_GATE_ROUNDS=3 taskset -c 0,1 bash scripts/perf-gate.sh \
+  --baseline-commit=e9e643447fd7bd00fb66fb0ec2b28d84716f56eb \
+  --suite=integration/udp_batch
+```
+
+All six Linux captures identify those exact commits and contain both UDP rows.
+The sole other owned local compiler was paused throughout measurement.
+The gate exited 0 in 166.64s: zero reproduced failures and one non-reproduced
+warning. Batch/single ratios were 1.3978, 1.5802, and 1.5526, above the unchanged
+0.95 floor. The first-round latency failure is retained below. This measures
+Linux non-regression; it makes no macOS performance claim. The earlier full
+integration gate above remains evidence for the earlier runtime source.
+
+### Round 1/3: baseline=benchmarks/results/paired/e9e64344-baseline.r1.json current=benchmarks/results/paired/HEAD-current.r1.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/udp_batch | single | integration | 195866.0 | 198382.7 | +1.28% | 5812 | 4446 | -23.50% | PASS |
+| integration/udp_batch | batch | integration | 311626.8 | 277297.1 | -11.02% | 4025 | 6416 | +59.40% | FAIL |
+
+Round 1 summary: 1 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 2/3: baseline=benchmarks/results/paired/e9e64344-baseline.r2.json current=benchmarks/results/paired/HEAD-current.r2.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/udp_batch | single | integration | 198311.1 | 199726.7 | +0.71% | 6133 | 4488 | -26.82% | PASS |
+| integration/udp_batch | batch | integration | 308652.6 | 315600.8 | +2.25% | 4727 | 3986 | -15.68% | PASS |
+
+Round 2 summary: 0 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 3/3: baseline=benchmarks/results/paired/e9e64344-baseline.r3.json current=benchmarks/results/paired/HEAD-current.r3.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/udp_batch | single | integration | 193103.7 | 197772.6 | +2.42% | 7212 | 6502 | -9.84% | PASS |
+| integration/udp_batch | batch | integration | 312185.6 | 307062.2 | -1.64% | 4041 | 4473 | +10.69% | PASS |
+
+Round 3 summary: 0 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Reproduction across 3 rounds
+
+A row FAILs only if EVERY HEAD round is worse than EVERY baseline round (sep = ranges do not overlap)
+and the median-to-median change exceeds the tier threshold and the absolute floor.
+ABSOLUTE-FAIL needs a strict majority of rounds. Rows that never left PASS/NOISE are omitted.
+
+| scenario | variant | ops/s med base | ops/s med cur | delta% | sep | p95 med base | p95 med cur | delta% | sep | FAIL/WARN rounds | verdict |
+|---|---|---:|---:|---:|---|---:|---:|---:|---|---|---|
+| integration/udp_batch | batch | 311626.8 | 307062.2 | -1.46% | no | 4041.0 | 4473.0 | +10.69% | no | 1/0 of 3 | NOT-REPRODUCED |
+
+Summary: 0 FAIL (reproduced), 1 WARN (not reproduced across 3 rounds)
+
+Capture digests:
+
+| capture | SHA-256 |
+|---|---|
+| `e9e64344-baseline.r1.json` | `107141c4a457fd0716d48d4b9eabeda3fc7e7f929a6f9e58d28876f97223105e` |
+| `e9e64344-baseline.r2.json` | `1e7869bfee4d69ad991b557a180f43dd62a67405c1d9051e1a7cd681cd058acb` |
+| `e9e64344-baseline.r3.json` | `e8ea57ec4ca92a3ac3bdb7d9d56556b1e79f14a96d087ac2e0dff2a480d46047` |
+| `HEAD-current.r1.json` | `7edc1af9f8ad90663aa5b2dbb3249fd729bcbdf86a86d70d295ba815949fe7eb` |
+| `HEAD-current.r2.json` | `dcb26045d65ed3c877e4deda96631c0bfb10d037f151a44b0c134cf413cdf8c3` |
+| `HEAD-current.r3.json` | `fabf664802db2060c681ae710be5d7e63be406b7d7f5a380e07453587bd6c6ea` |

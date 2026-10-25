@@ -126,6 +126,9 @@ pub fn fixedBufferStream(buf: []u8) FixedBufStream {
 
 /// Zig 0.16 compatibility replacement for removed std.time.nanoTimestamp().
 pub fn nanoTimestamp() i128 {
+    if (comptime @import("builtin").os.tag != .linux) {
+        return std.Io.Clock.real.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
+    }
     var ts: std.os.linux.timespec = undefined;
     const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
     if (rc != 0) return 0;
@@ -134,14 +137,26 @@ pub fn nanoTimestamp() i128 {
 
 /// Zig 0.16 compatibility replacement for removed std.time.milliTimestamp().
 pub fn milliTimestamp() i64 {
+    return @intCast(@divFloor(nanoTimestamp(), std.time.ns_per_ms));
+}
+
+/// Elapsed time in the platform monotonic clock domain, excluding suspend.
+pub fn monotonicNanoTimestamp() i128 {
+    if (comptime @import("builtin").os.tag != .linux) {
+        return std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
+    }
     var ts: std.os.linux.timespec = undefined;
-    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
     if (rc != 0) return 0;
-    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), std.time.ns_per_ms);
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
 }
 
 /// Zig 0.16 compatibility replacement for removed std.Thread.sleep().
 pub fn threadSleep(ns: u64) void {
+    if (comptime @import("builtin").os.tag != .linux) {
+        std.Io.sleep(std.Io.Threaded.global_single_threaded.io(), .fromNanoseconds(ns), .awake) catch {};
+        return;
+    }
     var ts: std.os.linux.timespec = .{
         .sec = @intCast(ns / std.time.ns_per_s),
         .nsec = @intCast(ns % std.time.ns_per_s),
@@ -174,6 +189,10 @@ pub fn randomBytes(buf: []u8) void {
 /// connection IDs, reset tokens, path challenges, or derived secrets MUST
 /// propagate the error rather than emit predictable bytes.
 pub fn secureRandomBytes(buf: []u8) error{RandomSourceUnavailable}!void {
+    if (comptime @import("builtin").os.tag != .linux) {
+        std.Io.Threaded.global_single_threaded.io().randomSecure(buf) catch return error.RandomSourceUnavailable;
+        return;
+    }
     const linux = std.os.linux;
     var off: usize = 0;
     while (off < buf.len) {

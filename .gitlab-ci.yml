@@ -142,8 +142,12 @@ build:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
+  # Each build mode retains its own artifacts. Parallel jobs must not
+  # overwrite each other's cache with disjoint compiler outputs.
+  cache: &quic-zig-cache
+    key:
+      prefix: "quic-zig-linux-x86_64-${ZIG_VERSION}-${CI_JOB_NAME_SLUG}-v1"
+      files: [build.zig.zon]
     paths:
       - zig-cache/
       - .zig-cache/
@@ -176,16 +180,15 @@ test:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test --summary all
+    # Competing Debug compiler/test steps starve the 32-client handshake on
+    # two-vCPU runners. Serialize graph steps; the test still runs 32 clients
+    # with its unchanged handshake and echo deadlines.
+    - zig build test -j1 --summary all
 
 # FIPS-140-3 dual-mode gate (-Dfips=true), same pattern as devnw/zig/fts-storage.
 #
@@ -212,6 +215,16 @@ fips-deps:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  # make deps already verifies the installed version and active provider.
+  # Retain that installation across pipelines instead of rebuilding OpenSSL
+  # for every unrelated source change. Installer edits invalidate the cache.
+  cache:
+    key:
+      prefix: "quic-openssl-fips-3.6.3-bookworm-x86_64-v1"
+      files: [scripts/install-openssl-fips.sh, scripts/verify-fips-provider.sh]
+    paths:
+      - .openssl-fips/
+    policy: pull-push
   before_script:
     - apt-get update
     # wget + sudo + gnupg: required by scripts/install-openssl-fips.sh (it
@@ -220,6 +233,15 @@ fips-deps:
     # container is a no-op wrapper).
     - apt-get install -y --no-install-recommends build-essential perl wget curl sudo gnupg ca-certificates make
   script:
+    - |
+      # Restored installations may have been built at another runner path.
+      FIPS_PREFIX="$CI_PROJECT_DIR/.openssl-fips"
+      if [ -x "$FIPS_PREFIX/bin/openssl" ]; then
+        sed -i "s#^\.include .*/ssl/fipsmodule\.cnf\$#.include ${FIPS_PREFIX}/ssl/fipsmodule.cnf#" "$FIPS_PREFIX/ssl/openssl.cnf"
+        FIPS_LIBDIR="$FIPS_PREFIX/lib64"
+        [ -d "$FIPS_LIBDIR/ossl-modules" ] || FIPS_LIBDIR="$FIPS_PREFIX/lib"
+        export OPENSSL_MODULES="$FIPS_LIBDIR/ossl-modules" LD_LIBRARY_PATH="$FIPS_LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      fi
     - OPENSSL_PREFIX="$CI_PROJECT_DIR/.openssl-fips" OPENSSL_VERSION="3.6.3" make deps
   artifacts:
     paths:
@@ -240,11 +262,7 @@ test-fips:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - *install-zig
     # fips-deps bakes its own $CI_PROJECT_DIR into openssl.cnf's `.include`
@@ -256,8 +274,12 @@ test-fips:
     - grep -q "^\.include ${FIPS_PREFIX}/ssl/fipsmodule\.cnf\$" "$FIPS_PREFIX/ssl/openssl.cnf"
     - FIPS_LIBDIR="$FIPS_PREFIX/lib64"; [ -d "$FIPS_LIBDIR/ossl-modules" ] || FIPS_LIBDIR="$FIPS_PREFIX/lib"
     - export OPENSSL_MODULES="$FIPS_LIBDIR/ossl-modules" LD_LIBRARY_PATH="$FIPS_LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # The system OpenSSL 3.0 CLI crashes during certificate generation when
+    # loaded with the artifact's 3.6 libraries. Use its matching CLI as well.
+    - export PATH="$FIPS_PREFIX/bin:$PATH"
+    - OPENSSL_PREFIX="$FIPS_PREFIX" bash scripts/verify-fips-provider.sh
   script:
-    - OPENSSL_CONF="$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf" zig build test -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
+    - OPENSSL_CONF="$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf" zig build test -j2 -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
 
 test-release-safe:
   stage: test
@@ -273,16 +295,12 @@ test-release-safe:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseSafe --summary all
+    - zig build test -j2 -Doptimize=ReleaseSafe --summary all
 
 test-release-fast:
   stage: test
@@ -298,16 +316,12 @@ test-release-fast:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseFast --summary all
+    - zig build test -j2 -Doptimize=ReleaseFast --summary all
 
 test-release-small:
   stage: test
@@ -326,16 +340,12 @@ test-release-small:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseSmall --summary all
+    - zig build test -j2 -Doptimize=ReleaseSmall --summary all
 
 e2e-test-python:
   stage: e2e
@@ -685,11 +695,7 @@ quality-zig-gates:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git libssl-dev
     - *install-zig
@@ -755,11 +761,7 @@ stress-integration-20x:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
       allow_failure: true
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git libssl-dev jq
     - *install-zig
@@ -798,10 +800,19 @@ stress-integration-20x:
 
 runtime-smoke-macos-saas:
   stage: test
+  # Installs its own toolchain and uses no Linux build/FIPS artifacts.
+  needs: []
+  timeout: 15m
   image: macos-15-xcode-16
   tags:
     - saas-macos-medium-m1
   rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/quic/**/*
+        - src/fips_backend/std_shim.zig
+        - tests/test_portable_runtime.zig
+        - scripts/native_runtime_smoke.sh
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_TAG
@@ -867,11 +878,7 @@ fuzz:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -1036,4 +1043,7 @@ workflow:
     - if: '$CI_COMMIT_TAG'
       auto_cancel:
         on_new_commit: none
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"'
+      when: never
     - when: always
