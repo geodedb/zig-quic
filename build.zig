@@ -964,6 +964,19 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&install_client_transport.step);
     examples_step.dependOn(&install_server_transport.step);
 
+    // SONNY-4776: terminal stream operations share the writer's packet-number
+    // critical section. Keep this regression in the default test graph.
+    const test_stream_lifecycle = addTst(b, testlog_mod, compat_mod, "tests/test_stream_lifecycle_serialization.zig", target, optimize);
+    test_stream_lifecycle.root_module.addImport("quic_conn", quic_conn_mod);
+    test_stream_lifecycle.root_module.addImport("quic_packet", quic_packet_mod);
+    const run_test_stream_lifecycle = b.addRunArtifact(test_stream_lifecycle);
+    const stream_lifecycle_step = b.step("test-stream-lifecycle", "Test stream lifecycle serialization with active writers");
+    stream_lifecycle_step.dependOn(&run_test_stream_lifecycle.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "stream_lifecycle")) {
+        test_step.dependOn(&run_test_stream_lifecycle.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "stream_lifecycle")) return;
+
     // The native smoke lane exercises the same runtime helpers used by the
     // endpoint, recovery timers, Retry tokens, and non-FIPS crypto backend.
     const portable_runtime_test = addTst(b, testlog_mod, compat_mod, "tests/test_portable_runtime.zig", target, optimize);
