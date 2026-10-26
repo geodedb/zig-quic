@@ -443,3 +443,78 @@ Capture digests:
 | `HEAD-current.r1.json` | `7edc1af9f8ad90663aa5b2dbb3249fd729bcbdf86a86d70d295ba815949fe7eb` |
 | `HEAD-current.r2.json` | `dcb26045d65ed3c877e4deda96631c0bfb10d037f151a44b0c134cf413cdf8c3` |
 | `HEAD-current.r3.json` | `fabf664802db2060c681ae710be5d7e63be406b7d7f5a380e07453587bd6c6ea` |
+
+
+### 2026-10-26 — Stream lifecycle guards on current main (SONNY-4776)
+
+Integrated main `e2dbef30dee4c2dbb4768ed6933d695a8a4fafad` into the
+stream lifecycle fix. The measured candidate is
+`335c47aa9c0803ba05bfa84ce2da9c6ee9a736f6`; the only production change
+from main is the FIN, RESET_STREAM and STOP_SENDING writer-mutex guards.
+`src/quic/connection/methods_b.zig` SHA-256 remained
+`2a360ec5b120bdb064f7a3129ce347faa4fb3165e014bd6fa7c7fd7cf64c4389`
+through the entire capture. Seven lifecycle tests pass; the same tests
+against current main fail six checks and pass the error-release check.
+The complete default graph passes 151 tests, skips two, and completes
+all 38 steps. The six hook-environment tests and Zig formatting pass.
+
+The paired integration gate ran three alternating A/B rounds on the same
+Linux x86_64 host, with Zig 0.16.0, CPUs 0–1 and build parallelism two.
+Both revisions used identical ignored TLS fixtures. No other owned local
+compilation or test suite ran during the uninterrupted 10,952.15-second
+capture (19:44:38–22:47:10 UTC). Each of the six captures contains the
+38 integration scenarios, including unchanged workload counts and gates.
+The earlier debugger-inspected attempt is excluded.
+
+```sh
+PERF_GATE_ROUNDS=3 taskset -c 0,1 bash scripts/perf-gate.sh \
+  --baseline-commit=e2dbef30dee4c2dbb4768ed6933d695a8a4fafad \
+  --suite=integration
+```
+
+Gate exit: **0; zero reproduced failures and 18 non-reproduced warnings**.
+The UDP batch/single throughput ratios are 1.5481, 1.6584 and 1.5509,
+above the unchanged 0.95 floor. The rows below retain the observed
+variation; this is non-regression gate evidence, not a performance
+improvement claim. Native MR CI and the published Geode dependency/client
+validation remain separate acceptance steps.
+
+### Reproduction across 3 rounds
+
+A row FAILs only if EVERY HEAD round is worse than EVERY baseline round (sep = ranges do not overlap)
+and the median-to-median change exceeds the tier threshold and the absolute floor.
+ABSOLUTE-FAIL needs a strict majority of rounds. Rows that never left PASS/NOISE are omitted.
+
+| scenario | variant | ops/s med base | ops/s med cur | delta% | sep | p95 med base | p95 med cur | delta% | sep | FAIL/WARN rounds | verdict |
+|---|---|---:|---:|---:|---|---:|---:|---:|---|---|---|
+| integration/udp_batch | single | 194810.0 | 192725.7 | -1.07% | no | 6380.0 | 6880.0 | +7.84% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/udp_batch | batch | 301369.6 | 307434.6 | +2.01% | no | 4980.0 | 4634.0 | -6.95% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 0c | 95834.3 | 96228.8 | +0.41% | no | 12703.0 | 12329.0 | -2.94% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 1c | 98339.4 | 99619.8 | +1.30% | no | 11727.0 | 9495.0 | -19.03% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 10c | 98962.3 | 99466.8 | +0.51% | no | 9410.0 | 9342.0 | -0.72% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/poll_overhead | 100c | 97781.1 | 98522.7 | +0.76% | no | 9399.0 | 9280.0 | -1.27% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1c | 80654267.4 | 80675089.1 | +0.03% | no | 9353.0 | 11971.0 | +27.99% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 1Kc-100s | 2272.8 | 2246.5 | -1.16% | no | 104558.0 | 108891.0 | +4.14% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/conn_scale | 10Kc-10s | 112.6 | 116.2 | +3.19% | no | 217918.0 | 210522.0 | -3.39% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | serial | 510.9 | 520.2 | +1.83% | no | 2334345.0 | 2126019.0 | -8.92% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/handshake_e2e | 100p | 341.9 | 345.0 | +0.90% | no | 201814425.0 | 210155722.0 | +4.13% | yes | 1/0 of 3 | NOT-REPRODUCED |
+| integration/stream_throughput | 64B-c10 | 142.4 | 138.9 | -2.44% | yes | 127997051.0 | 137357554.0 | +7.31% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/stream_throughput | 1KB-c32-progress | 842.1 | 854.7 | +1.50% | no | 62674634.0 | 50398240.0 | -19.59% | no | 0/1 of 3 | NOT-REPRODUCED |
+| integration/stream_throughput | 1KB-c100 | 585.7 | 526.0 | -10.20% | yes | 85680787.0 | 91570565.0 | +6.87% | no | 1/1 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | batch_1 | 5568.2 | 5640.7 | +1.30% | no | 47882.0 | 47474.0 | -0.85% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | batch_16 | 22496.3 | 22121.5 | -1.67% | no | 1231755.0 | 1237458.0 | +0.46% | no | 1/0 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | batch_64 | 6212.3 | 6145.5 | -1.08% | no | 709367.0 | 979033.0 | +38.02% | no | 2/0 of 3 | NOT-REPRODUCED |
+| integration/datagram_batch | concurrent_independent_progress | 34714.8 | 34757.1 | +0.12% | no | 1235282.0 | 1221992.0 | -1.08% | no | 1/1 of 3 | NOT-REPRODUCED |
+
+Summary: 0 FAIL (reproduced), 18 WARN (not reproduced across 3 rounds)
+
+Capture digests:
+
+| capture | SHA-256 |
+|---|---|
+| `HEAD-current.r1.json` | `09ea778b6cf9a843a9b40dacff9ca3616c82f566319798285ab5f5bc886dfbf2` |
+| `HEAD-current.r2.json` | `bf772e567ed5fcb8f4849739829292ffcfdee8585a590abbfbcd9a787d831912` |
+| `HEAD-current.r3.json` | `9bb79080908c66d8cee79333721fce79fcb6b2d2a6dc65c28c3074b95d52e5fd` |
+| `e2dbef30-baseline.r1.json` | `c2f72efb26f07217d617cab3d06e7e81cb5f2888622610a3cd9cd54b9ac52bdd` |
+| `e2dbef30-baseline.r2.json` | `6629e8e0095fc9227eda9ab42d2d19d3a7e80a3cf9fbc663f3e8690928be9cba` |
+| `e2dbef30-baseline.r3.json` | `6f520f55a94f9a7863f889f81e360d55c9a3af44964000598388a4a76f2493d5` |
