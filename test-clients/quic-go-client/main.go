@@ -28,15 +28,18 @@ func main() {
 		os.Setenv("QUIC_GO_LOG_LEVEL", "debug")
 	}
 
-	keyLogFile := openKeyLog(keyLogPath)
-	if keyLogFile != nil {
-		defer keyLogFile.Close()
-	}
-
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: insecure,
 		NextProtos:         []string{"hq-interop"},
-		KeyLogWriter:       keyLogFile,
+	}
+
+	// Only set KeyLogWriter when a file was opened. Assigning a nil *os.File
+	// to the io.Writer field yields a non-nil interface whose Write returns
+	// os.ErrInvalid, which crypto/tls surfaces as a fatal handshake error
+	// ("CRYPTO_ERROR 0x150 (local): tls: KeyLogWriter: invalid argument").
+	if keyLogFile := openKeyLog(keyLogPath); keyLogFile != nil {
+		defer keyLogFile.Close()
+		tlsConf.KeyLogWriter = keyLogFile
 	}
 
 	// QUIC config

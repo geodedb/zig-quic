@@ -295,6 +295,7 @@ pub fn build(b: *std.Build) void {
     // Token module (Retry token encode/verify)
     const quic_token_mod = mkModule(b, "src/quic/token.zig");
     quic_token_mod.addImport("byteorder", byteorder_mod);
+    quic_token_mod.addImport("compat", compat_mod);
     quic_token_mod.addImport("crypto_backend", crypto_backend_mod);
 
     // Logger module for QUIC library (local QUIC logger, not vendored TLS logger)
@@ -523,6 +524,7 @@ pub fn build(b: *std.Build) void {
 
     const endpoint_timer_mod = mkModule(b, "src/quic/endpoint/timer.zig");
     endpoint_timer_mod.addImport("types", endpoint_types_mod);
+    endpoint_timer_mod.addImport("compat", compat_mod);
 
     const endpoint_lookup_mod = mkModule(b, "src/quic/endpoint/lookup.zig");
     endpoint_lookup_mod.addImport("types", endpoint_types_mod);
@@ -827,6 +829,7 @@ pub fn build(b: *std.Build) void {
     // High-level transport API module (single instance, public-facing)
     const transport_public = b.addModule("transport", .{ .root_source_file = b.path("src/quic/transport.zig") });
     transport_public.addImport("quic_api", quic_api_mod);
+    transport_public.addImport("compat", compat_mod);
     transport_public.addImport("quic_endpoint", quic_endpoint_mod);
     transport_public.addImport("quic_conn", quic_conn_mod);
     transport_public.addImport("quic_crypto", quic_crypto_mod);
@@ -974,6 +977,16 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "stream_lifecycle")) return;
 
+    // The native smoke lane exercises the same runtime helpers used by the
+    // endpoint, recovery timers, Retry tokens, and non-FIPS crypto backend.
+    const portable_runtime_test = addTst(b, testlog_mod, compat_mod, "tests/test_portable_runtime.zig", target, optimize);
+    portable_runtime_test.root_module.addImport("std_shim", std_shim_mod);
+    portable_runtime_test.root_module.addImport("sharding", algo_sharding_mod);
+    const run_portable_runtime_test = b.addRunArtifact(portable_runtime_test);
+    const portable_runtime_step = b.step("test-portable-runtime", "Test native clocks, sleep, and OS entropy");
+    portable_runtime_step.dependOn(&run_portable_runtime_test.step);
+    if (filter == null) test_step.dependOn(&run_portable_runtime_test.step);
+
     // Filtering
     if (filter) |f| {
         if (std.mem.startsWith(u8, f, "transport_geode_compat")) {
@@ -1009,6 +1022,28 @@ pub fn build(b: *std.Build) void {
             test_udp_transport_only.root_module.link_libc = true;
             const run_test_udp_transport_only = b.addRunArtifact(test_udp_transport_only);
             test_step.dependOn(&run_test_udp_transport_only.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "teardown_churn_stress")) {
+            // Opt-in stress harness (not in the default graph): geode-shaped
+            // multi-poller server with connect/stream/close/destroyBatch churn.
+            // Intended for `taskset -c 0` single-CPU runs.
+            const test_teardown_churn = addTst(b, testlog_mod, compat_mod, "tests/test_endpoint_teardown_churn_stress.zig", target, optimize);
+            test_teardown_churn.root_module.addImport("quic_api", quic_api_mod);
+            test_teardown_churn.root_module.addImport("quic_config", quic_config_mod);
+            const run_test_teardown_churn = b.addRunArtifact(test_teardown_churn);
+            run_test_teardown_churn.has_side_effects = true;
+            test_step.dependOn(&run_test_teardown_churn.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "teardown_deadlock")) {
+            // Regression: Endpoint.mu <-> poll-worker deadlock between
+            // destroyConnections (waiting for RX refs under mu) and a pinned
+            // poll worker that needs mu (maybeQueueDeferredAccepted).
+            const test_teardown_deadlock = addTst(b, testlog_mod, compat_mod, "tests/test_endpoint_teardown_deadlock_regression.zig", target, optimize);
+            test_teardown_deadlock.root_module.addImport("quic_api", quic_api_mod);
+            test_teardown_deadlock.root_module.addImport("quic_conn", quic_conn_mod);
+            test_teardown_deadlock.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
+            test_step.dependOn(&run_test_teardown_deadlock.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "pto_handshake_uaf")) {
             // Regression test for the UAF in processExpiredTimers when a
@@ -1340,6 +1375,16 @@ pub fn build(b: *std.Build) void {
             test_h3_loop.root_module.addImport("test_certs", test_certs_mod);
             const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
             test_step.dependOn(&run_test_h3_loop.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "small_rcvbuf")) {
+            const test_small_rcvbuf_only = addTst(b, testlog_mod, compat_mod, "tests/test_small_rcvbuf_bulk_stream.zig", target, optimize);
+            test_small_rcvbuf_only.root_module.addImport("quic_api", quic_api_mod);
+            test_small_rcvbuf_only.root_module.addImport("quic_config", quic_config_mod);
+            test_small_rcvbuf_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_small_rcvbuf_only.root_module.addImport("test_certs", test_certs_mod);
+            test_small_rcvbuf_only.root_module.addImport("quic_build_options", build_options_mod);
+            const run_test_small_rcvbuf_only = b.addRunArtifact(test_small_rcvbuf_only);
+            test_step.dependOn(&run_test_small_rcvbuf_only.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "concurrent_load")) {
             const test_concurrent_load_only = addTst(b, testlog_mod, compat_mod, "tests/test_concurrent_load.zig", target, optimize);
@@ -2338,6 +2383,15 @@ pub fn build(b: *std.Build) void {
         const run_test_smoke = b.addRunArtifact(test_smoke);
         test_step.dependOn(&run_test_smoke.step);
 
+        // RFC 9001 §4.9.2: the client keeps its Handshake keys and the
+        // retransmit copy of its Finished until HANDSHAKE_DONE.
+        const test_client_hs_keys = addTst(b, testlog_mod, compat_mod, "tests/test_client_hs_key_retention.zig", target, optimize);
+        test_client_hs_keys.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);
+        test_client_hs_keys.root_module.addImport("quic_conn", quic_conn_mod);
+        test_client_hs_keys.root_module.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+        const run_test_client_hs_keys = b.addRunArtifact(test_client_hs_keys);
+        test_step.dependOn(&run_test_client_hs_keys.step);
+
         // FIPS-140-3 seam test: proves the crypto_backend seam is reachable
         // and resolves an approved SHA-256 KAT in BOTH -Dfips modes.
         const test_fips_seam = addTst(b, testlog_mod, compat_mod, "tests/fips_seam_test.zig", target, optimize);
@@ -2409,6 +2463,25 @@ pub fn build(b: *std.Build) void {
         }
         const run_observability_enabled_tests = b.addRunArtifact(observability_enabled_tests);
         test_step.dependOn(&run_observability_enabled_tests.step);
+
+        // Regression: Endpoint.mu <-> poll-worker teardown deadlock (quic
+        // v0.1.44, gdb-captured at conn.zig beginEndpointDestroy /
+        // endpoint.zig destroyConnections). Pre-fix the forced interleaving
+        // hangs; the test fails on a 10 s deadline instead. Lives in the
+        // default test graph so every `zig build test` gates it.
+        const test_teardown_deadlock = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_endpoint_teardown_deadlock_regression.zig",
+            target,
+            optimize,
+        );
+        test_teardown_deadlock.root_module.addImport("quic_api", quic_api_mod);
+        test_teardown_deadlock.root_module.addImport("quic_conn", quic_conn_mod);
+        test_teardown_deadlock.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
+        test_step.dependOn(&run_test_teardown_deadlock.step);
 
         // Regression: concurrent-HELLO NoHandshakeKeys race pinned by
         // commit 4b246b2 ("fix(handshake): drive TLS state machine
@@ -2489,6 +2562,26 @@ pub fn build(b: *std.Build) void {
         const run_test_long_response_stream_stall = b.addRunArtifact(test_long_response_stream_stall);
         test_step.dependOn(&run_test_long_response_stream_stall.step);
 
+        // Regression: bulk (1 MiB) single-stream transfer with the
+        // receiver's SO_RCVBUF clamped to the Docker/AWS default
+        // (~212 KB). Datagram loss at the receiver socket must be
+        // recovered; pre-fix the transfer stalled (geode backup create).
+        const test_small_rcvbuf_bulk_stream = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_small_rcvbuf_bulk_stream.zig",
+            target,
+            optimize,
+        );
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_api", quic_api_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_config", quic_config_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("test_certs", test_certs_mod);
+        test_small_rcvbuf_bulk_stream.root_module.addImport("quic_build_options", build_options_mod);
+        const run_test_small_rcvbuf_bulk_stream = b.addRunArtifact(test_small_rcvbuf_bulk_stream);
+        test_step.dependOn(&run_test_small_rcvbuf_bulk_stream.step);
+
         const test_high_parallel_stream_progress = addTst(
             b,
             testlog_mod,
@@ -2537,6 +2630,14 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Benchmark suite (benchmarks/ directory)
     //
+    const test_receive_accounting = addTst(b, testlog_mod, compat_mod, "tests/test_receive_accounting.zig", target, optimize);
+    test_receive_accounting.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_receive_accounting.root_module.addImport("transport", endpoint_transport_mod);
+    test_receive_accounting.root_module.addImport("config.zig", quic_config_mod);
+    const run_receive_accounting = b.addRunArtifact(test_receive_accounting);
+    test_step.dependOn(&run_receive_accounting.step);
+    b.step("test-receive-accounting", "Run deterministic bounded receive-accounting regressions").dependOn(&run_receive_accounting.step);
+
     // Phase 3 rewire: the legacy `bench/` directory (quic-bench, bench_tls_*,
     // udp_batch_bench) and its independent v1 scaffolds (poll_bench, scale_bench,
     // throughput_bench, handshake_bench) have been retired. All measurement
