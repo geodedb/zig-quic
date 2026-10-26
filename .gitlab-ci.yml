@@ -28,6 +28,8 @@ include:
 
   # Code quality
   - component: gitlab.com/devnw/ci-catalog/zig-format@aad997d40e358eeef7ec943f761498341c37c724
+    inputs:
+      zig_version: "0.16.0"
 
   # SBOM
   - component: gitlab.com/devnw/ci-catalog/sbom-generate@aad997d40e358eeef7ec943f761498341c37c724
@@ -102,6 +104,11 @@ variables:
 zig-format:
   before_script:
     - *install-zig
+    - apt-get install -y --no-install-recommends git findutils
+  script:
+    # Own formatting for every tracked Zig file in one job, using the project compiler.
+    - git ls-files -z '*.zig' | xargs -0 -r zig fmt --check
+    - find src -name '*.zig' -print0 | xargs -0 -r -n1 zig ast-check
 
 # E2E tests with multiple QUIC client implementations
 # Tests Python (aioquic), Go (quic-go), Rust (quinn), and Zig clients
@@ -691,7 +698,6 @@ quality-zig-gates:
     - apt-get update && apt-get install -y --no-install-recommends git libssl-dev
     - *install-zig
   script:
-    - git ls-files '*.zig' | xargs -r zig fmt --check
     - zig build examples
     # Unified tiered perf gate (Phase 7 Task 7.1). Runs `zig build bench`
     # to capture current-HEAD JSON, then `zig build bench-compare` against
@@ -1044,6 +1050,12 @@ workflow:
       auto_cancel:
         on_new_commit: none
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"'
+      auto_cancel:
+        on_job_failure: all
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
       when: never
+    # Stop failed validation runs without interrupting default-branch or tag work.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      auto_cancel:
+        on_job_failure: all
     - when: always
