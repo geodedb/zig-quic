@@ -4,7 +4,7 @@
 
 default:
   # Pin to Linux runners. Without the `linux` tag, jobs without an `image:`
-  # directive (e.g. zig-format, gemnasium-dependency_scanning from included
+  # directive (e.g. zig-format from included
   # components) can be picked up by the group's Hosted Windows Runner —
   # whose PowerShell shell-executor then tries to run our bash scripts and
   # fails. All Linux runners (Company Cluster, OVH Dedicated, Lab Servers)
@@ -97,15 +97,6 @@ variables:
     fi
   - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   - zig version
-
-# GitLab Advanced SAST: download no artifacts. With no `needs`, these
-# test-stage jobs pulled every earlier artifact, including the
-# security-policy jobs' own gl-sast-report.json (gitlab-advanced-sast-profile-0
-# and -ext-profile-0). The analyzer runs as a non-root user and then failed
-# with "open .../gl-sast-report.json: permission denied" whenever the
-# root-owned copy landed last (pipelines 2933883902, 2936039032).
-# It also wasted scan time on .openssl-fips/ and zig-out/ binaries. The
-# analyzer only needs the checked-out source.
 
 # zig-format component override: inject Zig install before format check
 zig-format:
@@ -902,17 +893,26 @@ security-rust-cargo-audit:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "quic-cargo-audit-0.22.2-rust1.99-linux-x86_64-v1"
+    paths:
+      - .cache/cargo-audit/
   script:
+    - export PATH="$CI_PROJECT_DIR/.cache/cargo-audit/bin:$PATH"
     - |
-      for attempt in 1 2 3; do
-        cargo install cargo-audit --locked --version 0.22.2 && break
-        if [ "$attempt" -eq 3 ]; then
-          echo "cargo-audit install failed after retries" >&2
-          exit 1
-        fi
-        echo "Retrying cargo-audit install (${attempt}/3)..." >&2
-        sleep 5
-      done
+      audit_bin="$CI_PROJECT_DIR/.cache/cargo-audit/bin/cargo-audit"
+      if [ "$("$audit_bin" --version 2>/dev/null || true)" != "cargo-audit 0.22.2" ]; then
+        for attempt in 1 2 3; do
+          cargo install --root "$CI_PROJECT_DIR/.cache/cargo-audit" cargo-audit --locked --version 0.22.2 --force && break
+          if [ "$attempt" -eq 3 ]; then
+            echo "cargo-audit install failed after retries" >&2
+            exit 1
+          fi
+          echo "Retrying cargo-audit install (${attempt}/3)..." >&2
+          sleep 5
+        done
+      fi
+      test "$("$audit_bin" --version)" = "cargo-audit 0.22.2"
     - (cd clients/rust && cargo audit)
     - (cd test-clients/legacy-clients/rust && cargo audit)
     - (cd test-clients/quinn-client && cargo audit)
