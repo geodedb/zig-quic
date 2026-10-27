@@ -697,3 +697,7 @@ update-go-dependencies:
 
       echo "Created merge request for dependency updates"
   allow_failure: true
+
+workflow:
+  auto_cancel:
+    on_job_failure: all
