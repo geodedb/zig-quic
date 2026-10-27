@@ -140,6 +140,20 @@ ISO-8601 `YYYY-MM-DD`.
   order between rounds. See
   `docs/PERFORMANCE_TARGETS.md#noise-tolerance`; evidence in MR !77.
 
+### 2026-10-27 — Micro suites in their own executables for the paired gate
+
+- quic !80 (endpoint pending-handshake retry only) failed `micro/aead
+  chacha20_poly1305` in 5/5 paired rounds on CI, and locally with !92 on top
+  (-14% ops/s, +20% p95). The change does not touch AEAD: in the single
+  `bench` binary, the extra endpoint code moves std's `ChaChaIETF(20).xor`
+  from byte 48 to byte 32 of a 64-byte line. A no-op 8-byte change in the
+  endpoint left it in place and left the row unchanged.
+- `zig build bench-isolated` builds each micro suite as its own executable
+  (`benchmarks/micro_main.zig`, merged by `benchmarks/isolated_runner.zig`).
+  With !80 and !92 applied, every suite's `.text` is byte-identical to main.
+  `perf-gate.sh` uses this step for micro suites when both commits have it.
+  Thresholds, floors and rows are unchanged.
+
 <!-- New entries go above this line -->
 
 ### 2026-04-20 — Initial v2 baseline capture
@@ -443,7 +457,6 @@ Capture digests:
 | `HEAD-current.r1.json` | `7edc1af9f8ad90663aa5b2dbb3249fd729bcbdf86a86d70d295ba815949fe7eb` |
 | `HEAD-current.r2.json` | `dcb26045d65ed3c877e4deda96631c0bfb10d037f151a44b0c134cf413cdf8c3` |
 | `HEAD-current.r3.json` | `fabf664802db2060c681ae710be5d7e63be406b7d7f5a380e07453587bd6c6ea` |
-
 
 ### 2026-10-26 — Stream lifecycle guards on current main (SONNY-4776)
 

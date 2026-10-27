@@ -2768,6 +2768,58 @@ pub fn build(b: *std.Build) void {
     bench_external_step.dependOn(&install_bench_runner.step);
     bench_external_step.dependOn(&bench_external_run.step);
 
+    // `bench-isolated`: micro suites, one executable per suite
+    // (benchmarks/micro_main.zig), run and merged by
+    // benchmarks/isolated_runner.zig. A change to unrelated code (endpoint,
+    // connection, integration benches) cannot move a micro suite's hot loops,
+    // so the paired perf gate measures only the code each suite calls.
+    // scripts/perf-gate.sh uses this step when both compared commits have it.
+    const isolated_runner = addExe(b, "bench-isolated", "benchmarks/isolated_runner.zig", target, .ReleaseFast);
+    isolated_runner.root_module.addImport("bench_common", bench_common_mod);
+    const run_isolated_runner = b.addRunArtifact(isolated_runner);
+    // Registry order (benchmarks/bench_runner.zig), so rows come out in the
+    // same order as `zig build bench`.
+    const isolated_micro_suites = [_][]const u8{
+        "varint",
+        "pacing",
+        "header_protection",
+        "aead",
+        "tls_keygen",
+        "frame_serialization",
+        "connection_lookup",
+        "loss_detection_scan",
+        "send_buffer_alloc",
+    };
+    for (isolated_micro_suites) |suite_name| {
+        const suite_mod = b.createModule(.{
+            .root_source_file = b.path(b.fmt("benchmarks/micro/{s}.zig", .{suite_name})),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        // Same imports the runner provides; Zig only compiles what the
+        // suite actually references.
+        suite_mod.addImport("bench_common", bench_common_mod);
+        suite_mod.addImport("quic_varint", quic_varint_mod);
+        suite_mod.addImport("quic_recovery", quic_recovery_mod);
+        suite_mod.addImport("quic_crypto", quic_crypto_mod);
+        suite_mod.addImport("quic_packet", quic_packet_mod);
+        suite_mod.addImport("quic_frame", quic_frame_mod);
+        suite_mod.addImport("compat", compat_mod);
+        suite_mod.addImport("quic_tls", quic_tls_mod);
+        suite_mod.addImport("quic_tls13", tls13_mod);
+        suite_mod.addImport("quic_endpoint", quic_endpoint_mod);
+        suite_mod.addImport("quic_conn", quic_conn_mod);
+        suite_mod.addImport("quic_config", quic_config_mod);
+        suite_mod.addImport("quic_api", quic_api_mod);
+        const suite_exe = addExe(b, b.fmt("bench-micro-{s}", .{suite_name}), "benchmarks/micro_main.zig", target, .ReleaseFast);
+        suite_exe.root_module.addImport("bench_common", bench_common_mod);
+        suite_exe.root_module.addImport("micro_suite", suite_mod);
+        run_isolated_runner.addPrefixedArtifactArg(b.fmt("--micro-exe=micro/{s}=", .{suite_name}), suite_exe);
+    }
+    if (b.args) |args| run_isolated_runner.addArgs(args);
+    const bench_isolated_step = b.step("bench-isolated", "Run micro benchmarks, one executable per suite (--suite=micro|<scenario>, --output=<path>)");
+    bench_isolated_step.dependOn(&run_isolated_runner.step);
+
     // DEPRECATED retired-name aliases. Each invokes the runner with a fixed
     // --suite=<scenario_short_name>. bench-throughput and bench-handshake
     // point at scenarios that will be introduced by Phase 5 Tasks 5.1/5.2;

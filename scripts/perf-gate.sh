@@ -97,13 +97,25 @@ require_jq() {
 # ---------------------------------------------------------------------------
 # Bench capture
 # ---------------------------------------------------------------------------
+# Build step that captures a suite. Paired-commit mode switches micro suites
+# to `bench-isolated` (one executable per micro suite, see
+# benchmarks/isolated_runner.zig) when both commits have that step, so a
+# change to unrelated code cannot move a micro suite's hot loops. Both sides
+# always use the same step.
+BENCH_STEP="bench"
+
+# has_isolated_bench <dir>: does the build.zig in <dir> define bench-isolated?
+has_isolated_bench() {
+    [[ -f "$1/build.zig" ]] && grep -q '"bench-isolated"' "$1/build.zig"
+}
+
 # run_bench <suite> <out.json>
 run_bench() {
     local suite="$1"
     local out="$2"
     mkdir -p "$(dirname "$out")"
-    log "running zig build bench --suite=$suite --output=$out"
-    "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$out"
+    log "running zig build $BENCH_STEP --suite=$suite --output=$out"
+    "${ZIG_RUNNER[@]}" build "$BENCH_STEP" -- --suite="$suite" --output="$out"
 }
 
 # ---------------------------------------------------------------------------
@@ -242,6 +254,12 @@ mode_paired_commit() {
     log "creating worktree $worktree at $short_sha"
     git worktree add --detach "$worktree" "$sha" >/dev/null
 
+    if [[ "$suite" == "micro" || "$suite" == micro/* ]] \
+        && has_isolated_bench "$PROJECT_ROOT" && has_isolated_bench "$worktree"; then
+        BENCH_STEP="bench-isolated"
+    fi
+    log "capture step: zig build $BENCH_STEP (both sides)"
+
     local baseline_json current_json
     baseline_json="$PAIRED_DIR/$short_sha-baseline.json"
     current_json="$PAIRED_DIR/HEAD-current.json"
@@ -260,7 +278,7 @@ mode_paired_commit() {
 
     if [[ "$rounds" -eq 1 ]]; then
         log "capturing baseline ($short_sha) — suite=$suite"
-        (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$baseline_json")
+        (cd "$worktree" && "${ZIG_RUNNER[@]}" build "$BENCH_STEP" -- --suite="$suite" --output="$PROJECT_ROOT/$baseline_json")
 
         log "capturing current (HEAD) — suite=$suite"
         run_bench "$suite" "$current_json"
@@ -272,14 +290,14 @@ mode_paired_commit() {
             round_current="$PAIRED_DIR/HEAD-current.r$r.json"
             if ((r % 2 == 1)); then
                 log "round $r/$rounds: capturing baseline ($short_sha) first — suite=$suite"
-                (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$round_baseline")
+                (cd "$worktree" && "${ZIG_RUNNER[@]}" build "$BENCH_STEP" -- --suite="$suite" --output="$PROJECT_ROOT/$round_baseline")
                 log "round $r/$rounds: capturing current (HEAD) — suite=$suite"
                 run_bench "$suite" "$round_current"
             else
                 log "round $r/$rounds: capturing current (HEAD) first — suite=$suite"
                 run_bench "$suite" "$round_current"
                 log "round $r/$rounds: capturing baseline ($short_sha) — suite=$suite"
-                (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$round_baseline")
+                (cd "$worktree" && "${ZIG_RUNNER[@]}" build "$BENCH_STEP" -- --suite="$suite" --output="$PROJECT_ROOT/$round_baseline")
             fi
             pairs+=("$round_baseline" "$round_current")
         done
