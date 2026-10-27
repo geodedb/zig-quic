@@ -5,6 +5,8 @@
 # Prefer the MR pipeline for feature branches with open MRs. Preserve
 # default-branch/tag releases and scheduled, API, and triggered pipelines.
 workflow:
+  auto_cancel:
+    on_job_failure: all
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
