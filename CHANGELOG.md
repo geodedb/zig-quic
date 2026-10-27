@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### CI
+
+- The paired perf gate builds each micro benchmark suite as its own executable (`zig build bench-isolated`) once both compared commits support it. Changes to unrelated code no longer move a micro suite's hot loops in the shared `bench` binary, which had failed `micro/aead chacha20_poly1305` on an endpoint-only change (!80). Thresholds and rows are unchanged.
+
 ## [0.1.47] - 2026-10-24
 
 ### Fixed

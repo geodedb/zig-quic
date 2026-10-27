@@ -13,6 +13,10 @@ SCRIPTS = Path(__file__).resolve().parent
 
 
 class PairedRoundTests(unittest.TestCase):
+    # build.zig contents per fixture commit; None means no build.zig.
+    baseline_build_zig = None
+    current_build_zig = None
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="quic-rounds-")
         self.addCleanup(temporary.cleanup)
@@ -30,12 +34,21 @@ class PairedRoundTests(unittest.TestCase):
         shutil.copy2(SCRIPTS / "perf-gate.sh", self.repo / "scripts/perf-gate.sh")
         (self.repo / "src").mkdir()
         (self.repo / "src/runtime").write_text("100\n")
-        self.git("add", ".")
+        self.write_build_zig(self.baseline_build_zig)
+        self.git("add", "-A")
         self.git("commit", "-m", "baseline fixture")
         self.parent = self.git("rev-parse", "HEAD")
         (self.repo / "src/runtime").write_text("125\n")
-        self.git("add", ".")
+        self.write_build_zig(self.current_build_zig)
+        self.git("add", "-A")
         self.git("commit", "-m", "current fixture")
+
+    def write_build_zig(self, contents):
+        path = self.repo / "build.zig"
+        if contents is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(contents)
 
     def git(self, *args):
         result = subprocess.run(
@@ -57,8 +70,10 @@ import json, os, pathlib, re, sys
 args = sys.argv[1:]
 def argument(name):
     return next(a.split("=", 1)[1] for a in args if a.startswith(name + "="))
-if args[:2] == ["build", "bench"]:
+if args[:1] == ["build"] and args[1:2] in (["bench"], ["bench-isolated"]):
     output = pathlib.Path(argument("--output"))
+    with open(os.environ["ROUND_STEPS"], "a") as log:
+        log.write(args[1] + "\\n")
     match = re.search(r"\\.r([0-9]+)\\.json$", output.name)
     round_index = int(match[1]) - 1 if match else 0
     current = pathlib.Path("src/runtime").read_text() == "125\\n"
@@ -95,6 +110,7 @@ else:
         compiler.chmod(0o755)
         comparisons = self.directory / "comparisons.jsonl"
         captures = self.directory / "captures.txt"
+        steps = self.directory / "steps.txt"
         result = subprocess.run(
             [
                 "bash",
@@ -110,6 +126,7 @@ else:
                 ROUND_ROWS=json.dumps(current_rows),
                 ROUND_COMPARISONS=str(comparisons),
                 ROUND_CAPTURES=str(captures),
+                ROUND_STEPS=str(steps),
             ),
             text=True,
             capture_output=True,
@@ -117,6 +134,7 @@ else:
         )
         receipts = [json.loads(line) for line in comparisons.read_text().splitlines()]
         self.captures = captures.read_text().splitlines()
+        self.steps = steps.read_text().splitlines()
         return result, receipts
 
     def test_multiround_gate_ignores_a_regression_that_does_not_reproduce(self):
@@ -159,6 +177,11 @@ else:
             [(100, 400), (50, 100)],
         )
 
+    def test_paired_gate_uses_the_monolithic_bench_without_isolated_step(self):
+        result, _ = self.run_rounds([[100, 100], [100, 100]])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.steps, ["bench"] * 4)
+
     def test_multiround_gate_compares_every_pair_when_all_pass(self):
         result, comparisons = self.run_rounds([[100, 100], [90, 110]])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -166,6 +189,31 @@ else:
         for index, (baseline, current, _) in enumerate(comparisons, 1):
             self.assertTrue(baseline.endswith(f"-baseline.r{index}.json"))
             self.assertEqual(current, f"HEAD-current.r{index}.json")
+
+
+ISOLATED_BUILD_ZIG = 'const step = b.step("bench-isolated", "...");\n'
+
+
+class IsolatedStepTests(PairedRoundTests):
+    """Micro captures use bench-isolated only when both commits define it."""
+
+    baseline_build_zig = ISOLATED_BUILD_ZIG
+    current_build_zig = ISOLATED_BUILD_ZIG
+
+    def test_paired_gate_uses_the_monolithic_bench_without_isolated_step(self):
+        pass
+
+    def test_paired_gate_uses_isolated_step_on_both_sides(self):
+        result, _ = self.run_rounds([[100, 100], [100, 100]])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.steps, ["bench-isolated"] * 4)
+
+
+class IsolatedStepOnlyAtHeadTests(PairedRoundTests):
+    """A baseline without bench-isolated keeps both sides on bench."""
+
+    baseline_build_zig = None
+    current_build_zig = ISOLATED_BUILD_ZIG
 
 
 if __name__ == "__main__":

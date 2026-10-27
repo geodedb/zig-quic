@@ -234,7 +234,10 @@ five-minute window on the same hardware.
 
 2. **Register it.** Add the module import + a `SuiteEntry` row to the
    `registry` in `benchmarks/bench_runner.zig`. Verify with
-   `zig build bench -- --list` that your scenario appears.
+   `zig build bench -- --list` that your scenario appears. For a micro
+   suite, also add its file name to `isolated_micro_suites` in `build.zig`
+   (same position as in the registry), so `zig build bench-isolated` and
+   the paired perf gate build it as its own executable.
 
 3. **If the scenario carries an absolute gate,** add a row to the
    `absolute_gates` table in `benchmarks/compare.zig` **and** a row
