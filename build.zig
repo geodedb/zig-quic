@@ -1385,6 +1385,16 @@ pub fn build(b: *std.Build) void {
             const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
             test_step.dependOn(&run_test_h3_loop.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "client_finished_wouldblock")) {
+            const test_client_finished_wouldblock_only = addTst(b, testlog_mod, compat_mod, "tests/test_client_finished_wouldblock.zig", target, optimize);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_api", quic_api_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_config", quic_config_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("test_certs", test_certs_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_build_options", build_options_mod);
+            const run_test_client_finished_wouldblock_only = b.addRunArtifact(test_client_finished_wouldblock_only);
+            test_step.dependOn(&run_test_client_finished_wouldblock_only.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "small_rcvbuf")) {
             const test_small_rcvbuf_only = addTst(b, testlog_mod, compat_mod, "tests/test_small_rcvbuf_bulk_stream.zig", target, optimize);
             test_small_rcvbuf_only.root_module.addImport("quic_api", quic_api_mod);
@@ -2607,6 +2617,25 @@ pub fn build(b: *std.Build) void {
         test_small_rcvbuf_bulk_stream.root_module.addImport("quic_build_options", build_options_mod);
         const run_test_small_rcvbuf_bulk_stream = b.addRunArtifact(test_small_rcvbuf_bulk_stream);
         test_step.dependOn(&run_test_small_rcvbuf_bulk_stream.step);
+
+        // Regression: a client Finished refused with error.WouldBlock is
+        // kept and retried through the pending-handshake queue instead of
+        // being freed, which stalled the handshake until the idle timeout.
+        const test_client_finished_wouldblock = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_client_finished_wouldblock.zig",
+            target,
+            optimize,
+        );
+        test_client_finished_wouldblock.root_module.addImport("quic_api", quic_api_mod);
+        test_client_finished_wouldblock.root_module.addImport("quic_config", quic_config_mod);
+        test_client_finished_wouldblock.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_client_finished_wouldblock.root_module.addImport("test_certs", test_certs_mod);
+        test_client_finished_wouldblock.root_module.addImport("quic_build_options", build_options_mod);
+        const run_test_client_finished_wouldblock = b.addRunArtifact(test_client_finished_wouldblock);
+        test_step.dependOn(&run_test_client_finished_wouldblock.step);
 
         const test_high_parallel_stream_progress = addTst(
             b,
