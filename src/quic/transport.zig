@@ -9,32 +9,24 @@
 //! directly to §§2–4, while TLS handling aligns with RFC 9001 §4.
 
 const std = @import("std");
+const compat = @import("compat");
 const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const api = @import("quic_api");
 
 /// Zig 0.16.0 compat: milliTimestamp() was removed.
 fn milliTimestamp() i64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
-    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+    return compat.milliTimestamp();
 }
 
 /// Zig 0.16 compat: replacement for removed std.time.nanoTimestamp().
 fn nanoTimestampCompat() i128 {
-    var ts: std.os.linux.timespec = undefined;
-    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-    if (rc != 0) return 0;
-    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    return compat.nanoTimestamp();
 }
 
 /// Zig 0.16.0 compat: std.Thread.sleep() was removed.
 fn nanosleep(ns: u64) void {
-    var ts: std.os.linux.timespec = .{
-        .sec = @intCast(ns / std.time.ns_per_s),
-        .nsec = @intCast(ns % std.time.ns_per_s),
-    };
-    _ = std.os.linux.nanosleep(&ts, &ts);
+    compat.threadSleep(ns);
 }
 
 /// Errors that can occur during QUIC operations.
@@ -220,7 +212,7 @@ pub const QuicTransport = struct {
             const inner = conn.quic_connection orelse conn.inner;
             conn.close();
             if (self.endpoint) |ep| {
-                api.destroy(ep, inner);
+                destroyUnderEndpointLock(ep, inner);
             } else {
                 inner.deinit();
             }
@@ -384,8 +376,16 @@ pub const QuicTransport = struct {
         logger.debugPrint("{{\"component\":\"transport\",\"transport\":\"quic\",\"tls\":\"true\",\"port\":{d}}}\n", .{self.config.port});
     }
 
-    fn generateSelfSignedCert(self: *QuicTransport, cert_path: []const u8, key_path: []const u8) !void {
-        const gen_io = std.Io.Threaded.global_single_threaded.io();
+    fn generateSelfSignedCert(_: *QuicTransport, cert_path: []const u8, key_path: []const u8) !void {
+        // Process spawning allocates argv/environment storage. The global
+        // single-threaded Io uses a failing allocator, even when no worker
+        // threads are needed. Keep this startup operation synchronous.
+        var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{
+            .async_limit = .nothing,
+            .concurrent_limit = .nothing,
+        });
+        defer threaded.deinit();
+        const gen_io = threaded.io();
         if (std.fs.path.dirname(cert_path)) |dir| {
             std.Io.Dir.cwd().createDirPath(gen_io, dir) catch {};
         }
@@ -394,7 +394,7 @@ pub const QuicTransport = struct {
         }
 
         // Generate self-signed certificate using OpenSSL command
-        const result = try std.process.run(self.allocator, gen_io, .{
+        var child = try std.process.spawn(gen_io, .{
             .argv = &[_][]const u8{
                 "openssl",
                 "req",
@@ -413,11 +413,14 @@ pub const QuicTransport = struct {
                 "-subj",
                 "/CN=localhost",
             },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
         });
-        defer self.allocator.free(result.stdout);
-        defer self.allocator.free(result.stderr);
+        defer child.kill(gen_io);
+        const term = try child.wait(gen_io);
 
-        if (result.term != .exited or result.term.exited != 0) {
+        if (term != .exited or term.exited != 0) {
             return QuicError.CertificateError;
         }
 
@@ -434,6 +437,19 @@ pub const QuicTransport = struct {
         }
     }
 
+    /// `api.destroy` requires the endpoint mutex (it mutates conns/accepted/
+    /// retired and may release + re-acquire `mu` while waiting for poll workers
+    /// that pin the connection). Take the same locks, in the same order, as
+    /// geode's deferred-destroy drain: pto_lifetime_mu -> mu.
+    fn destroyUnderEndpointLock(ep: *api.QuicEndpoint, inner: *api.QuicConnection) void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        ep.pto_lifetime_mu.lockUncancelable(io);
+        defer ep.pto_lifetime_mu.unlock(io);
+        ep.mu.lockUncancelable(io);
+        defer ep.mu.unlock(io);
+        api.destroy(ep, inner);
+    }
+
     /// Process deferred connection destructions queued by worker threads.
     /// Must be called by the polling thread.
     pub fn drainPendingDestroy(self: *QuicTransport) void {
@@ -446,7 +462,7 @@ pub const QuicTransport = struct {
 
         for (self.pending_destroy.items) |inner_conn| {
             if (self.endpoint) |ep| {
-                api.destroy(ep, inner_conn);
+                destroyUnderEndpointLock(ep, inner_conn);
             } else {
                 inner_conn.deinit();
             }

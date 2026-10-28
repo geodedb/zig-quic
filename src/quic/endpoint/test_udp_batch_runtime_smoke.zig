@@ -1,14 +1,30 @@
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const transport_mod = @import("transport.zig");
 const udp_transport_mod = @import("udp_transport.zig");
+
+fn expectNonblocking(fd: std.posix.socket_t) !void {
+    const getfl: c_int = switch (@typeInfo(@TypeOf(std.c.F.GETFL))) {
+        .@"enum" => @intFromEnum(std.c.F.GETFL),
+        else => @intCast(std.c.F.GETFL),
+    };
+    const raw_flags = std.c.fcntl(fd, getfl, @as(c_int, 0));
+    try testing.expect(raw_flags >= 0);
+    const flags: std.c.O = @bitCast(raw_flags);
+    try testing.expect(flags.NONBLOCK);
+}
 
 test "udp transport batch API round-trip smoke" {
     var recv_transport_impl = try udp_transport_mod.UdpTransport.init("127.0.0.1:0");
     defer recv_transport_impl.deinit();
     var send_transport_impl = try udp_transport_mod.UdpTransport.init("127.0.0.1:0");
     defer send_transport_impl.deinit();
+    // Fail before a blocking receive if a platform's descriptor flags were
+    // confused with its socket-creation flags.
+    try expectNonblocking(recv_transport_impl.fd);
+    try expectNonblocking(send_transport_impl.fd);
 
     var recv_transport = recv_transport_impl.asTransport();
     var send_transport = send_transport_impl.asTransport();
@@ -46,10 +62,7 @@ test "udp transport batch API round-trip smoke" {
     while (received_total < items.len and attempts < 200) : (attempts += 1) {
         const got = recv_transport.recvBatch(recv_slots[0..]) catch |err| {
             if (err == error.WouldBlock) {
-                {
-                    var sleep_ts: std.os.linux.timespec = .{ .sec = 0, .nsec = @intCast(1 * std.time.ns_per_ms) };
-                    _ = std.os.linux.nanosleep(&sleep_ts, &sleep_ts);
-                }
+                compat.threadSleep(std.time.ns_per_ms);
                 continue;
             }
             return err;
@@ -72,4 +85,14 @@ test "udp transport batch API round-trip smoke" {
     for (seen) |ok| {
         try testing.expect(ok);
     }
+}
+
+test "udp transport empty batch receive returns WouldBlock" {
+    var impl = try udp_transport_mod.UdpTransport.init("127.0.0.1:0");
+    defer impl.deinit();
+    try expectNonblocking(impl.fd);
+    var transport = impl.asTransport();
+    var buf: [64]u8 = undefined;
+    var slots = [_]transport_mod.RecvBatchSlot{.{ .buf = &buf, .n = 0, .peer = .{}, .ecn = null }};
+    try testing.expectError(error.WouldBlock, transport.recvBatch(&slots));
 }
