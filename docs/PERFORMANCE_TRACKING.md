@@ -672,3 +672,121 @@ Capture digests:
 | `e2dbef30-baseline.r1.json` | `c2f72efb26f07217d617cab3d06e7e81cb5f2888622610a3cd9cd54b9ac52bdd` |
 | `e2dbef30-baseline.r2.json` | `6629e8e0095fc9227eda9ab42d2d19d3a7e80a3cf9fbc663f3e8690928be9cba` |
 | `e2dbef30-baseline.r3.json` | `6f520f55a94f9a7863f889f81e360d55c9a3af44964000598388a4a76f2493d5` |
+
+
+### 2026-10-28 — Current-CI client startup qualification (SONNY-4796)
+
+Five alternating same-session handshake pairs compare
+`18accf22e055d07166a35417118ff37a82086fee` with
+`ca0a4a207593f4b70bec91e265b3981164965daa`, using Zig 0.16.0
+on the same Linux host. The benchmark and transport inputs differ only in
+endpoint ownership comments between these two revisions; this run checks
+the integrated checkout and does not establish a runtime speedup over the
+original feature branch. The later parent-branch integration changes only
+CI ancestry; the measured runtime, build and benchmark files remain intact.
+
+The unchanged gate exited 0 after 89 minutes 33 seconds: zero reproduced
+failures and two non-reproduced warnings. The isolated serial and 100p
+round failures are retained verbatim below. All five serial, 10p, 100p,
+1Kp and 10Kp capture pairs completed. The 10K scenario measures handshakes
+completed within its existing deadline, not complete 10K admission.
+This run does not qualify other integration scenarios or native FIPS.
+
+```sh
+PERF_GATE_ROUNDS=5 bash scripts/perf-gate.sh \
+  --baseline-commit=18accf22e055d07166a35417118ff37a82086fee \
+  --suite=integration/handshake_e2e
+```
+
+The Zig launcher caps compilation at `-j2` and supplies the same existing
+test certificates to the baseline checkout. Benchmark parameters, thresholds
+and five alternating capture rounds are unchanged. Heavy local validation
+was held during measurement.
+
+### Round 1/5: baseline=benchmarks/results/paired/18accf22-baseline.r1.json current=benchmarks/results/paired/HEAD-current.r1.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/handshake_e2e | serial | integration | 473.9 | 533.8 | +12.63% | 2941448 | 2217026 | -24.63% | PASS |
+| integration/handshake_e2e | 10p | integration | 539.2 | 649.4 | +20.43% | 22764352 | 18272419 | -19.73% | PASS |
+| integration/handshake_e2e | 100p | integration | 392.1 | 372.8 | -4.91% | 205324017 | 217828024 | +6.09% | PASS |
+| integration/handshake_e2e | 1Kp | integration | 81.8 | 79.6 | -2.74% | 1908850243 | 1917567962 | +0.46% | PASS |
+| integration/handshake_e2e | 10Kp | integration | 57.6 | 52.9 | -8.22% | 1922147622 | 1912476921 | -0.50% | PASS |
+
+Round 1 summary: 0 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 2/5: baseline=benchmarks/results/paired/18accf22-baseline.r2.json current=benchmarks/results/paired/HEAD-current.r2.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/handshake_e2e | serial | integration | 490.4 | 546.9 | +11.52% | 2168872 | 1992717 | -8.12% | PASS |
+| integration/handshake_e2e | 10p | integration | 691.6 | 704.0 | +1.80% | 14830520 | 16044871 | +8.19% | PASS |
+| integration/handshake_e2e | 100p | integration | 503.4 | 370.8 | -26.34% | 125900191 | 222115843 | +76.42% | FAIL |
+| integration/handshake_e2e | 1Kp | integration | 89.6 | 86.1 | -3.86% | 1898833138 | 1879067206 | -1.04% | PASS |
+| integration/handshake_e2e | 10Kp | integration | 50.0 | 53.1 | +6.09% | 1930141424 | 1925577985 | -0.24% | PASS |
+
+Round 2 summary: 1 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 3/5: baseline=benchmarks/results/paired/18accf22-baseline.r3.json current=benchmarks/results/paired/HEAD-current.r3.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/handshake_e2e | serial | integration | 537.3 | 509.4 | -5.18% | 2066822 | 2189557 | +5.94% | PASS |
+| integration/handshake_e2e | 10p | integration | 714.1 | 685.5 | -4.01% | 14718414 | 15111482 | +2.67% | PASS |
+| integration/handshake_e2e | 100p | integration | 389.9 | 396.5 | +1.68% | 214851729 | 206881539 | -3.71% | PASS |
+| integration/handshake_e2e | 1Kp | integration | 89.1 | 81.6 | -8.49% | 1931424075 | 1896297666 | -1.82% | PASS |
+| integration/handshake_e2e | 10Kp | integration | 55.0 | 58.4 | +6.21% | 1918882494 | 1911661385 | -0.38% | PASS |
+
+Round 3 summary: 0 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 4/5: baseline=benchmarks/results/paired/18accf22-baseline.r4.json current=benchmarks/results/paired/HEAD-current.r4.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/handshake_e2e | serial | integration | 540.5 | 504.8 | -6.60% | 1887565 | 2798327 | +48.25% | FAIL |
+| integration/handshake_e2e | 10p | integration | 730.9 | 701.9 | -3.97% | 13753927 | 14374497 | +4.51% | PASS |
+| integration/handshake_e2e | 100p | integration | 372.4 | 382.6 | +2.74% | 220097433 | 135787155 | -38.31% | PASS |
+| integration/handshake_e2e | 1Kp | integration | 92.7 | 87.3 | -5.84% | 1916077086 | 1908913843 | -0.37% | PASS |
+| integration/handshake_e2e | 10Kp | integration | 52.8 | 56.9 | +7.65% | 1928325701 | 1920397015 | -0.41% | PASS |
+
+Round 4 summary: 1 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Round 5/5: baseline=benchmarks/results/paired/18accf22-baseline.r5.json current=benchmarks/results/paired/HEAD-current.r5.json
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/handshake_e2e | serial | integration | 482.9 | 539.0 | +11.63% | 3095282 | 2050978 | -33.74% | PASS |
+| integration/handshake_e2e | 10p | integration | 614.0 | 738.7 | +20.31% | 17232063 | 13319799 | -22.70% | PASS |
+| integration/handshake_e2e | 100p | integration | 367.5 | 375.9 | +2.29% | 220692340 | 211583057 | -4.13% | PASS |
+| integration/handshake_e2e | 1Kp | integration | 81.8 | 81.6 | -0.21% | 1890230817 | 1932836534 | +2.25% | PASS |
+| integration/handshake_e2e | 10Kp | integration | 51.8 | 55.5 | +7.22% | 1925127748 | 1918079555 | -0.37% | PASS |
+
+Round 5 summary: 0 FAIL, 0 WARN, 0 NOISE (one round alone does not gate; see the reproduction table)
+
+### Reproduction across 5 rounds
+
+A row FAILs only if EVERY HEAD round is worse than EVERY baseline round (sep = ranges do not overlap)
+and the median-to-median change exceeds the tier threshold and the absolute floor.
+ABSOLUTE-FAIL needs a strict majority of rounds. Rows that never left PASS/NOISE are omitted.
+
+| scenario | variant | ops/s med base | ops/s med cur | delta% | sep | p95 med base | p95 med cur | delta% | sep | FAIL/WARN rounds | verdict |
+|---|---|---:|---:|---:|---|---:|---:|---:|---|---|---|
+| integration/handshake_e2e | serial | 490.4 | 533.8 | +8.85% | no | 2168872.0 | 2189557.0 | +0.95% | no | 1/0 of 5 | NOT-REPRODUCED |
+| integration/handshake_e2e | 100p | 389.9 | 375.9 | -3.60% | no | 214851729.0 | 211583057.0 | -1.52% | no | 1/0 of 5 | NOT-REPRODUCED |
+
+Summary: 0 FAIL (reproduced), 2 WARN (not reproduced across 5 rounds)
+
+Capture digests:
+
+| capture | SHA-256 |
+|---|---|
+| `18accf22-baseline.r1.json` | `369a10218c3a5ed7d7aca544b66ea6908727d8e9a863d18d5305b75102c11f17` |
+| `18accf22-baseline.r2.json` | `177020ec1ad6abc09896028669b142d105d3dcaebe2538191b5c888776dc787f` |
+| `18accf22-baseline.r3.json` | `7a8df818475858a882eadb9bb7a47246fa9ca37b553a7541bba39ca22bbc908d` |
+| `18accf22-baseline.r4.json` | `1471c1b7d0eab05365e40c12928cf2a408463bebc9e068156072c87eb6d96ab4` |
+| `18accf22-baseline.r5.json` | `33a3d9c7e100d7be6b1ee532ec76b21f0fdf5dbf3502963cfbadf2513968323b` |
+| `HEAD-current.r1.json` | `4404ab9db13a06f747ee97024227fd3addabd6a9609c7b05fbc087f9b6ca5712` |
+| `HEAD-current.r2.json` | `0c1ade09945ef30726827794bd744ac40b4282398ebcee500573f08151179d98` |
+| `HEAD-current.r3.json` | `80b6b792b0e2086f87921eb2dd125a2ee12221e132edef96e34e404a9082a113` |
+| `HEAD-current.r4.json` | `86b5b8879384310fae7c84298734770df85bdab8c092d575d4f07307f606e2b6` |
+| `HEAD-current.r5.json` | `534fd102cc8b4db9aeb748368f6446a95d2c1ab14d32c598df6b1c42bece83a8` |
