@@ -2182,12 +2182,23 @@ pub const Endpoint = struct {
         // QUIC idle timeout because the server never re-attempted the
         // Handshake send after the first-tick miss.
         //
-        // The pending set snapshots server-role connections with the flag set,
+        // The pending set snapshots connections with the flag set,
         // then retries outside the lock so a slow per-connection TLS poll
         // doesn't serialize unrelated handlers. The retry uses the same
         // sendToWrapper-style closure (current_io_endpoint thread-local)
         // that processIncomingDatagram and clientSendInitialProbe already
         // rely on, so no new lock-order surface is introduced.
+        //
+        // Lifetime: the retry runs without `mu`, so each snapshotted
+        // connection is pinned with an endpoint RX ref while it is still
+        // in `pending_hs_send_set` (destroy removes it from that set under
+        // `pending_hs_send_mu` before freeing, so membership under the lock
+        // proves it is alive). destroyConnections then waits for the pin
+        // before freeing, exactly as for an RX poll worker, and a connection
+        // already marked `endpoint_destroying` is refused and dropped here.
+        // Without the pin, a concurrent api.destroy/destroyBatch could free
+        // a snapshotted connection while this loop still used it, and the
+        // NoHandshakeKeys re-mark below would re-insert the freed pointer.
         {
             const pending_hs_start_ns = nowNsMonotonic();
             defer stats.pending_hs_send_ns = elapsedNsSince(pending_hs_start_ns);
@@ -2210,9 +2221,16 @@ pub const Endpoint = struct {
                 var it = self.pending_hs_send_set.iterator();
                 while (it.next()) |entry| {
                     const c = entry.key_ptr.*;
-                    if (c.role == .Server and !c.closed and c.pending_hs_send) {
+                    if (!c.closed and c.pending_hs_send) {
                         if (pending_hs_send_snapshot.items.len >= max_pending_hs_send_retries_per_poll_cycle) break;
-                        pending_hs_send_snapshot.appendAssumeCapacity(c);
+                        // Pin while membership still proves the connection is
+                        // alive; released after its retry below. Refused once
+                        // a destroy has started: drop it from the set instead.
+                        if (c.acquireEndpointRxRef()) {
+                            pending_hs_send_snapshot.appendAssumeCapacity(c);
+                        } else if (stale_hs_send_snapshot.items.len < pending_budget) {
+                            stale_hs_send_snapshot.appendAssumeCapacity(c);
+                        }
                     } else if (stale_hs_send_snapshot.items.len < pending_budget) {
                         stale_hs_send_snapshot.appendAssumeCapacity(c);
                     }
@@ -2239,6 +2257,10 @@ pub const Endpoint = struct {
                 };
 
                 for (pending_hs_send_snapshot.items) |c| {
+                    // Pinned in the snapshot above; a pending destroy waits
+                    // for this release before it frees `c`.
+                    defer c.releaseEndpointRxRef();
+
                     // CANARY: REQ=REQ-QUIC-HC-137; FEATURE="High-Concurrency Handshake"; ASPECT=PendingHandshakeSendSerialization; STATUS=TESTED; TEST=pending_hs_send_retry_waits_for_rx_serial_mutex; OWNER=transport; UPDATED=2026-05-28
                     //
                     // The normal Initial/Handshake receive paths hold this
@@ -2257,6 +2279,16 @@ pub const Endpoint = struct {
                     // on this connection's hs_tx_keys / hs_rx_keys.
                     handshake_integration.setCurrentConnection(c);
                     defer handshake_integration.clearCurrentConnection();
+
+                    if (c.role == .Client) {
+                        c.flushClientHandshakeCrypto() catch |err| {
+                            c.last_handshake_error = err;
+                            c.pending_hs_send = false;
+                            continue;
+                        };
+                        if (c.pending_hs_send) self.markPendingHandshakeSend(c);
+                        continue;
+                    }
 
                     var hs_ctx = handshake_integration.HandshakeContext{
                         .conn = c,
