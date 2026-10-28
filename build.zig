@@ -1045,6 +1045,15 @@ pub fn build(b: *std.Build) void {
             const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
             test_step.dependOn(&run_test_teardown_deadlock.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "pending_hs_retry_destroy")) {
+            // Regression: pending-handshake retry vs destroyBatch use-after-free.
+            const test_pending_hs_retry_destroy = addTst(b, testlog_mod, compat_mod, "tests/test_pending_hs_retry_destroy_regression.zig", target, optimize);
+            test_pending_hs_retry_destroy.root_module.addImport("quic_api", quic_api_mod);
+            test_pending_hs_retry_destroy.root_module.addImport("quic_conn", quic_conn_mod);
+            test_pending_hs_retry_destroy.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            const run_test_pending_hs_retry_destroy = b.addRunArtifact(test_pending_hs_retry_destroy);
+            test_step.dependOn(&run_test_pending_hs_retry_destroy.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "pto_handshake_uaf")) {
             // Regression test for the UAF in processExpiredTimers when a
             // PtoHandshake / PtoInitial timer fires after its captured
@@ -1375,6 +1384,16 @@ pub fn build(b: *std.Build) void {
             test_h3_loop.root_module.addImport("test_certs", test_certs_mod);
             const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
             test_step.dependOn(&run_test_h3_loop.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "client_finished_wouldblock")) {
+            const test_client_finished_wouldblock_only = addTst(b, testlog_mod, compat_mod, "tests/test_client_finished_wouldblock.zig", target, optimize);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_api", quic_api_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_config", quic_config_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("test_certs", test_certs_mod);
+            test_client_finished_wouldblock_only.root_module.addImport("quic_build_options", build_options_mod);
+            const run_test_client_finished_wouldblock_only = b.addRunArtifact(test_client_finished_wouldblock_only);
+            test_step.dependOn(&run_test_client_finished_wouldblock_only.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "small_rcvbuf")) {
             const test_small_rcvbuf_only = addTst(b, testlog_mod, compat_mod, "tests/test_small_rcvbuf_bulk_stream.zig", target, optimize);
@@ -2483,6 +2502,23 @@ pub fn build(b: *std.Build) void {
         const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
         test_step.dependOn(&run_test_teardown_deadlock.step);
 
+        // Regression: Phase 4.5 pending-handshake retry used snapshotted
+        // connection pointers without mu or an RX pin, so a concurrent
+        // destroyBatch could free a connection mid-retry (use-after-free).
+        const test_pending_hs_retry_destroy = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_pending_hs_retry_destroy_regression.zig",
+            target,
+            optimize,
+        );
+        test_pending_hs_retry_destroy.root_module.addImport("quic_api", quic_api_mod);
+        test_pending_hs_retry_destroy.root_module.addImport("quic_conn", quic_conn_mod);
+        test_pending_hs_retry_destroy.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_pending_hs_retry_destroy = b.addRunArtifact(test_pending_hs_retry_destroy);
+        test_step.dependOn(&run_test_pending_hs_retry_destroy.step);
+
         // Regression: concurrent-HELLO NoHandshakeKeys race pinned by
         // commit 4b246b2 ("fix(handshake): drive TLS state machine
         // before checking hs_tx_keys"). N=10 client threads fan into
@@ -2581,6 +2617,25 @@ pub fn build(b: *std.Build) void {
         test_small_rcvbuf_bulk_stream.root_module.addImport("quic_build_options", build_options_mod);
         const run_test_small_rcvbuf_bulk_stream = b.addRunArtifact(test_small_rcvbuf_bulk_stream);
         test_step.dependOn(&run_test_small_rcvbuf_bulk_stream.step);
+
+        // Regression: a client Finished refused with error.WouldBlock is
+        // kept and retried through the pending-handshake queue instead of
+        // being freed, which stalled the handshake until the idle timeout.
+        const test_client_finished_wouldblock = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_client_finished_wouldblock.zig",
+            target,
+            optimize,
+        );
+        test_client_finished_wouldblock.root_module.addImport("quic_api", quic_api_mod);
+        test_client_finished_wouldblock.root_module.addImport("quic_config", quic_config_mod);
+        test_client_finished_wouldblock.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_client_finished_wouldblock.root_module.addImport("test_certs", test_certs_mod);
+        test_client_finished_wouldblock.root_module.addImport("quic_build_options", build_options_mod);
+        const run_test_client_finished_wouldblock = b.addRunArtifact(test_client_finished_wouldblock);
+        test_step.dependOn(&run_test_client_finished_wouldblock.step);
 
         const test_high_parallel_stream_progress = addTst(
             b,
