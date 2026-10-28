@@ -395,6 +395,7 @@ pub fn bind(comptime Connection: type) type {
             defer self.allocator.free(out);
             const sent = self.send(out) catch |err| {
                 logger.warn("sendHandshakeCrypto send failed: {s}", .{@errorName(err)});
+                if (err == error.WouldBlock) return error.WouldBlock;
                 return error.SendFailed;
             };
             if (sent != out.len) {
@@ -433,6 +434,34 @@ pub fn bind(comptime Connection: type) type {
             self.pn_handshake_tx +%= 1;
 
             logger.debugPrint("[sendHandshakeCrypto] Sent {} bytes of CRYPTO in Handshake packet\n", .{crypto_data.len});
+        }
+
+        /// Retry client TLS output without feeding already-consumed peer bytes
+        /// back into TLS. Endpoint receive serialization must be held by caller.
+        pub fn flushClientHandshakeCrypto(self: *Connection) !void {
+            self.tls_context_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.tls_context_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            try flushClientHandshakeCryptoLocked(self);
+        }
+
+        fn flushClientHandshakeCryptoLocked(self: *Connection) !void {
+            if (self.role != .Client) return error.NotClient;
+            self.pending_hs_send = false;
+            const outgoing = self.pending_hs_messages orelse return;
+            const tls_ctx = self.tls_context orelse return error.NoTlsContext;
+            self.sendHandshakeCrypto(outgoing) catch |err| {
+                if (err == error.WouldBlock) {
+                    self.pending_hs_send = true;
+                    return;
+                }
+                // Retain ownership for teardown even on permanent failures.
+                return err;
+            };
+            self.allocator.free(outgoing);
+            self.pending_hs_messages = null;
+            self.pending_hs_send = false;
+            try tls_ctx.markLocalFinished();
+            self.maybeDeriveAppKeysAfterFlush();
         }
 
         /// Feed received CRYPTO bytes to the TLS Context and derive keys when secrets become available.
@@ -497,27 +526,25 @@ pub fn bind(comptime Connection: type) type {
             // But the client needs to poll and send its Finished after verifying server's Finished.
             // Only poll at Handshake level when we're a CLIENT and just processed Handshake CRYPTO.
             if (self.role == .Client and level == .Handshake) {
-                if (tls_ctx.pollCrypto(self.allocator.*, .Handshake)) |outgoing_crypto| {
-                    defer self.allocator.free(outgoing_crypto);
-
-                    logger.debugPrint("[pushCrypto] Client polled {} bytes of outgoing CRYPTO at Handshake level\n", .{outgoing_crypto.len});
-
-                    // Send the client's Finished message in Handshake packet
-                    if (outgoing_crypto.len > 0) {
-                        try self.sendHandshakeCrypto(outgoing_crypto);
-
-                        // CRITICAL: Mark that we sent our Finished message so TLS Context knows
-                        // This allows Application key derivation to proceed (requires both
-                        // peer_finished_verified AND local_finished_sent to be true)
-                        try tls_ctx.markLocalFinished();
-                        logger.debugPrint("[pushCrypto] Client marked local_finished_sent=true\n", .{});
-                    }
-                } else |err| {
-                    // Unimplemented means no outgoing data
-                    if (err != error.Unimplemented) {
-                        logger.debugPrint("[pushCrypto] Error polling Handshake CRYPTO: {}\n", .{err});
+                if (self.pending_hs_messages == null) {
+                    if (tls_ctx.pollCrypto(self.allocator.*, .Handshake)) |outgoing_crypto| {
+                        if (outgoing_crypto.len == 0) {
+                            self.allocator.free(outgoing_crypto);
+                        } else {
+                            // pollCrypto transfers ownership. Keep the Finished
+                            // until submission succeeds, including WouldBlock.
+                            self.pending_hs_messages = outgoing_crypto;
+                        }
+                    } else |err| {
+                        // Unimplemented means no outgoing data.
+                        if (err != error.Unimplemented) {
+                            logger.debugPrint("[pushCrypto] Error polling Handshake CRYPTO: {}\n", .{err});
+                        }
                     }
                 }
+                // A temporary send failure must not roll back the receive
+                // offset: TLS has already consumed these peer CRYPTO bytes.
+                try flushClientHandshakeCryptoLocked(self);
             }
 
             // Check for and install Handshake keys if now available
