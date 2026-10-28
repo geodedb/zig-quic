@@ -802,7 +802,7 @@ runtime-smoke-macos-saas:
   timeout: 15m
   image: macos-15-xcode-16
   tags:
-    - saas-macos-medium-m1
+    [dedicated, macos, arm]
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes:
