@@ -1045,6 +1045,15 @@ pub fn build(b: *std.Build) void {
             const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
             test_step.dependOn(&run_test_teardown_deadlock.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "pending_hs_retry_destroy")) {
+            // Regression: pending-handshake retry vs destroyBatch use-after-free.
+            const test_pending_hs_retry_destroy = addTst(b, testlog_mod, compat_mod, "tests/test_pending_hs_retry_destroy_regression.zig", target, optimize);
+            test_pending_hs_retry_destroy.root_module.addImport("quic_api", quic_api_mod);
+            test_pending_hs_retry_destroy.root_module.addImport("quic_conn", quic_conn_mod);
+            test_pending_hs_retry_destroy.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            const run_test_pending_hs_retry_destroy = b.addRunArtifact(test_pending_hs_retry_destroy);
+            test_step.dependOn(&run_test_pending_hs_retry_destroy.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "pto_handshake_uaf")) {
             // Regression test for the UAF in processExpiredTimers when a
             // PtoHandshake / PtoInitial timer fires after its captured
@@ -2482,6 +2491,23 @@ pub fn build(b: *std.Build) void {
         test_teardown_deadlock.root_module.addImport("quic_endpoint", quic_endpoint_mod);
         const run_test_teardown_deadlock = b.addRunArtifact(test_teardown_deadlock);
         test_step.dependOn(&run_test_teardown_deadlock.step);
+
+        // Regression: Phase 4.5 pending-handshake retry used snapshotted
+        // connection pointers without mu or an RX pin, so a concurrent
+        // destroyBatch could free a connection mid-retry (use-after-free).
+        const test_pending_hs_retry_destroy = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_pending_hs_retry_destroy_regression.zig",
+            target,
+            optimize,
+        );
+        test_pending_hs_retry_destroy.root_module.addImport("quic_api", quic_api_mod);
+        test_pending_hs_retry_destroy.root_module.addImport("quic_conn", quic_conn_mod);
+        test_pending_hs_retry_destroy.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_pending_hs_retry_destroy = b.addRunArtifact(test_pending_hs_retry_destroy);
+        test_step.dependOn(&run_test_pending_hs_retry_destroy.step);
 
         // Regression: concurrent-HELLO NoHandshakeKeys race pinned by
         // commit 4b246b2 ("fix(handshake): drive TLS state machine
