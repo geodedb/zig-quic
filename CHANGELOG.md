@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix a use-after-free in the server's pending-handshake retry (`pollWithStats` Phase 4.5). The retry snapshotted connection pointers from `pending_hs_send_set` and used them after dropping the set's lock, without `Endpoint.mu` or an endpoint RX pin, so a concurrent `api.destroy` / `api.destroyBatch` could free a connection mid-retry, and a `NoHandshakeKeys` retry re-inserted the freed pointer for the next poll. The retry now pins each connection while it is still in the set; destroy waits for the pin exactly as for an RX poll worker, and connections already being destroyed are dropped from the set instead of retried.
+
 ### CI
 
 - The paired perf gate builds each micro benchmark suite as its own executable (`zig build bench-isolated`) once both compared commits support it. Changes to unrelated code no longer move a micro suite's hot loops in the shared `bench` binary, which had failed `micro/aead chacha20_poly1305` on an endpoint-only change (!80). Thresholds and rows are unchanged.
