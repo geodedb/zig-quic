@@ -14,6 +14,7 @@
 //! - HMAC-SHA256 (32 bytes) over all previous fields
 
 const std = @import("std");
+const compat = @import("compat");
 const backend = @import("crypto_backend");
 
 /// Encode a token for address validation.
@@ -40,12 +41,7 @@ pub fn encode(
     if (client_ip.len > 255) return error.InvalidIpLength;
     if (dcid.len > 20) return error.InvalidCidLength;
 
-    const now_ms = @as(u64, @intCast(@divTrunc(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    }, std.time.ns_per_ms)));
+    const now_ms = @as(u64, @intCast(@divTrunc(compat.nanoTimestamp(), std.time.ns_per_ms)));
     const expiry_ms = now_ms + validity_ms;
 
     // Token layout: timestamp(8) + ip_len(1) + ip + dcid_len(1) + dcid + hmac(32)
@@ -215,12 +211,7 @@ pub fn validateInitialToken(
     const client_ip = extractIpBytes(client_addr);
     if (client_ip.len == 0) return false; // Unknown address family
 
-    const now_ms = @as(u64, @intCast(@divTrunc(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    }, std.time.ns_per_ms)));
+    const now_ms = @as(u64, @intCast(@divTrunc(compat.nanoTimestamp(), std.time.ns_per_ms)));
     return verify(token, client_ip, secret, now_ms);
 }
 
@@ -305,12 +296,7 @@ test "encode and verify valid token" {
     const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
     defer test_allocator.free(token);
 
-    const now_ms = @as(u64, @intCast(@divTrunc(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    }, std.time.ns_per_ms)));
+    const now_ms = @as(u64, @intCast(@divTrunc(compat.nanoTimestamp(), std.time.ns_per_ms)));
     try testing.expect(verify(token, &client_ip, secret, now_ms));
 }
 
@@ -326,12 +312,7 @@ test "verify rejects expired token" {
     // Wait for token to expire
     std.time.sleep(2 * std.time.ns_per_ms);
 
-    const now_ms = @as(u64, @intCast(@divTrunc(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    }, std.time.ns_per_ms)));
+    const now_ms = @as(u64, @intCast(@divTrunc(compat.nanoTimestamp(), std.time.ns_per_ms)));
     try testing.expect(!verify(token, &client_ip, secret, now_ms));
 }
 
@@ -345,12 +326,7 @@ test "verify rejects wrong IP address" {
     const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
     defer test_allocator.free(token);
 
-    const now_ms = @as(u64, @intCast(@divTrunc(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    }, std.time.ns_per_ms)));
+    const now_ms = @as(u64, @intCast(@divTrunc(compat.nanoTimestamp(), std.time.ns_per_ms)));
     try testing.expect(!verify(token, &wrong_ip, secret, now_ms));
 }
 
@@ -364,12 +340,7 @@ test "verify rejects wrong secret" {
     const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
     defer test_allocator.free(token);
 
-    const now_ms = @as(u64, @intCast(@divTrunc(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    }, std.time.ns_per_ms)));
+    const now_ms = @as(u64, @intCast(@divTrunc(compat.nanoTimestamp(), std.time.ns_per_ms)));
     try testing.expect(!verify(token, &client_ip, wrong_secret, now_ms));
 }
 
@@ -382,12 +353,7 @@ test "verify rejects truncated token" {
     const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
     defer test_allocator.free(token);
 
-    const now_ms = @as(u64, @intCast(@divTrunc(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    }, std.time.ns_per_ms)));
+    const now_ms = @as(u64, @intCast(@divTrunc(compat.nanoTimestamp(), std.time.ns_per_ms)));
     // Try to verify truncated token
     try testing.expect(!verify(token[0 .. token.len - 1], &client_ip, secret, now_ms));
 }

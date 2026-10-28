@@ -15,6 +15,10 @@ fn seededHash(bytes: []const u8, seed: u64) u64 {
 /// than via the `compat` module so this leaf utility carries no extra module
 /// dependency; mirrors compat.secureRandomBytes.
 fn secureRandomBytes(buf: []u8) error{RandomSourceUnavailable}!void {
+    if (comptime @import("builtin").os.tag != .linux) {
+        std.Io.Threaded.global_single_threaded.io().randomSecure(buf) catch return error.RandomSourceUnavailable;
+        return;
+    }
     const linux = std.os.linux;
     var off: usize = 0;
     while (off < buf.len) {
