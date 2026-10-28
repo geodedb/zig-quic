@@ -2188,6 +2188,17 @@ pub const Endpoint = struct {
         // sendToWrapper-style closure (current_io_endpoint thread-local)
         // that processIncomingDatagram and clientSendInitialProbe already
         // rely on, so no new lock-order surface is introduced.
+        //
+        // Lifetime: the retry runs without `mu`, so each snapshotted
+        // connection is pinned with an endpoint RX ref while it is still
+        // in `pending_hs_send_set` (destroy removes it from that set under
+        // `pending_hs_send_mu` before freeing, so membership under the lock
+        // proves it is alive). destroyConnections then waits for the pin
+        // before freeing, exactly as for an RX poll worker, and a connection
+        // already marked `endpoint_destroying` is refused and dropped here.
+        // Without the pin, a concurrent api.destroy/destroyBatch could free
+        // a snapshotted connection while this loop still used it, and the
+        // NoHandshakeKeys re-mark below would re-insert the freed pointer.
         {
             const pending_hs_start_ns = nowNsMonotonic();
             defer stats.pending_hs_send_ns = elapsedNsSince(pending_hs_start_ns);
@@ -2212,8 +2223,9 @@ pub const Endpoint = struct {
                     const c = entry.key_ptr.*;
                     if (!c.closed and c.pending_hs_send) {
                         if (pending_hs_send_snapshot.items.len >= max_pending_hs_send_retries_per_poll_cycle) break;
-                        // Retain while still under the set lock: teardown removes
-                        // the entry under this lock and waits for retained work.
+                        // Pin while membership still proves the connection is
+                        // alive; released after its retry below. Refused once
+                        // a destroy has started: drop it from the set instead.
                         if (c.acquireEndpointRxRef()) {
                             pending_hs_send_snapshot.appendAssumeCapacity(c);
                         } else if (stale_hs_send_snapshot.items.len < pending_budget) {
@@ -2245,7 +2257,10 @@ pub const Endpoint = struct {
                 };
 
                 for (pending_hs_send_snapshot.items) |c| {
+                    // Pinned in the snapshot above; a pending destroy waits
+                    // for this release before it frees `c`.
                     defer c.releaseEndpointRxRef();
+
                     // CANARY: REQ=REQ-QUIC-HC-137; FEATURE="High-Concurrency Handshake"; ASPECT=PendingHandshakeSendSerialization; STATUS=TESTED; TEST=pending_hs_send_retry_waits_for_rx_serial_mutex; OWNER=transport; UPDATED=2026-05-28
                     //
                     // The normal Initial/Handshake receive paths hold this
