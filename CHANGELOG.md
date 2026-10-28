@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix a use-after-free in the server's pending-handshake retry (`pollWithStats` Phase 4.5). The retry snapshotted connection pointers from `pending_hs_send_set` and used them after dropping the set's lock, without `Endpoint.mu` or an endpoint RX pin, so a concurrent `api.destroy` / `api.destroyBatch` could free a connection mid-retry, and a `NoHandshakeKeys` retry re-inserted the freed pointer for the next poll. The retry now pins each connection while it is still in the set; destroy waits for the pin exactly as for an RX poll worker, and connections already being destroyed are dropped from the set instead of retried.
+- Keep the client's Finished when its UDP submission returns `WouldBlock` (EAGAIN on a full socket send buffer). TLS hands the Finished to QUIC once, and the client used to free it on any send failure, before a retransmit copy existed, so nothing could resend it: the server never verified the client and the connection stalled until the idle timeout. The client now holds the bytes in `pending_hs_messages`, queues the connection on the endpoint's bounded pending-handshake retry (previously server-only), and marks the Finished sent only after a submission succeeds (SONNY-4791, carried over from !56).
+
 ### CI
 
 - The paired perf gate builds each micro benchmark suite as its own executable (`zig build bench-isolated`) once both compared commits support it. Changes to unrelated code no longer move a micro suite's hot loops in the shared `bench` binary, which had failed `micro/aead chacha20_poly1305` on an endpoint-only change (!80). Thresholds and rows are unchanged.
