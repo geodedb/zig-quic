@@ -32,21 +32,18 @@ default:
 
 include:
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@aad997d40e358eeef7ec943f761498341c37c724
 
   # Code quality
-  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
+  - component: gitlab.com/devnw/ci-catalog/zig-format@aad997d40e358eeef7ec943f761498341c37c724
 
   # SBOM
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@aad997d40e358eeef7ec943f761498341c37c724
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@aad997d40e358eeef7ec943f761498341c37c724
 
   # Release
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.27.0
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@aad997d40e358eeef7ec943f761498341c37c724
+  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@aad997d40e358eeef7ec943f761498341c37c724
 
 stages:
   - lint
@@ -402,7 +399,7 @@ client-trust-go:
   before_script: []
   script:
     - cd test-clients/quic-go-client && go test -race -count=1 -timeout=2m .
-  artifacts: null
+  artifacts:
   allow_failure: false
 
 e2e-test-rust:
@@ -711,7 +708,7 @@ runtime-smoke-macos-saas:
   stage: test
   image: macos-15-xcode-16
   tags:
-    - saas-macos-medium-m1
+    [dedicated, macos, arm]
   rules:
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
