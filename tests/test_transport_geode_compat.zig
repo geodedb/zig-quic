@@ -14,24 +14,16 @@ fn allocatePort() u16 {
 
 /// Zig 0.16.0 compat: compat.milliTimestamp() was removed.
 fn milliTimestamp() i64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
-    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+    return compat.milliTimestamp();
 }
 
 /// Zig 0.16.0 compat: compat.nanoTimestamp() was removed.
 fn nanoTimestamp() i128 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
-    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    return compat.nanoTimestamp();
 }
 
 fn threadSleep(ns: u64) void {
-    var ts: std.os.linux.timespec = .{
-        .sec = @intCast(ns / std.time.ns_per_s),
-        .nsec = @intCast(ns % std.time.ns_per_s),
-    };
-    _ = std.os.linux.nanosleep(&ts, &ts);
+    compat.threadSleep(ns);
 }
 
 fn waitForFlag(flag: *std.atomic.Value(bool), timeout_ms: u64) !void {
@@ -45,7 +37,7 @@ fn waitForFlag(flag: *std.atomic.Value(bool), timeout_ms: u64) !void {
 }
 
 fn isPollRequested(sync: *transport.PollSync) bool {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     sync.mu.lockUncancelable(io);
     defer sync.mu.unlock(io);
     return sync.poll_requested;
@@ -70,32 +62,28 @@ fn interruptAlways() bool {
 }
 
 fn requireOpenSsl(allocator: std.mem.Allocator) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const result = std.process.run(allocator, io, .{
+    const io = std.testing.io;
+    const result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "openssl", "version" },
-    }) catch {
-        return error.SkipZigTest;
-    };
+    });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     if (result.term != .exited or result.term.exited != 0) {
-        return error.SkipZigTest;
+        return error.OpenSslUnavailable;
     }
 }
 
 fn pathExists(path: []const u8) bool {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
 fn runOpenSsl(allocator: std.mem.Allocator, argv: []const []const u8) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const result = std.process.run(allocator, io, .{
+    const io = std.testing.io;
+    const result = try std.process.run(allocator, io, .{
         .argv = argv,
-    }) catch {
-        return error.SkipZigTest;
-    };
+    });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     if (result.term != .exited or result.term.exited != 0) {
@@ -104,7 +92,7 @@ fn runOpenSsl(allocator: std.mem.Allocator, argv: []const []const u8) !void {
 }
 
 fn ensureTestCertFiles(allocator: std.mem.Allocator) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const cert_path = "tests/certs/cert.pem";
     const key_path = "tests/certs/key.pem";
 
@@ -358,7 +346,7 @@ test "transport geode compat: auto-generated cert is ECDSA P-256" {
     const allocator = std.heap.page_allocator;
     try requireOpenSsl(allocator);
 
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = std.testing.io;
     const cert_path = try std.fmt.allocPrint(
         allocator,
         "/tmp/quic-transport-cert-{d}.pem",
@@ -392,7 +380,7 @@ test "transport geode compat: auto-generated cert is ECDSA P-256" {
     try std.Io.Dir.cwd().access(io, cert_path, .{});
     try std.Io.Dir.cwd().access(io, key_path, .{});
 
-    const dump = std.process.run(allocator, io, .{
+    const dump = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "openssl",
             "x509",
@@ -401,7 +389,7 @@ test "transport geode compat: auto-generated cert is ECDSA P-256" {
             "-noout",
             "-text",
         },
-    }) catch return error.SkipZigTest;
+    });
     defer allocator.free(dump.stdout);
     defer allocator.free(dump.stderr);
 
