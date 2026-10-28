@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.48] - 2026-10-28
+
 ### Fixed
 
 - Fix a use-after-free in the server's pending-handshake retry (`pollWithStats` Phase 4.5). The retry snapshotted connection pointers from `pending_hs_send_set` and used them after dropping the set's lock, without `Endpoint.mu` or an endpoint RX pin, so a concurrent `api.destroy` / `api.destroyBatch` could free a connection mid-retry, and a `NoHandshakeKeys` retry re-inserted the freed pointer for the next poll. The retry now pins each connection while it is still in the set; destroy waits for the pin exactly as for an RX poll worker, and connections already being destroyed are dropped from the set instead of retried.
 - Keep the client's Finished when its UDP submission returns `WouldBlock` (EAGAIN on a full socket send buffer). TLS hands the Finished to QUIC once, and the client used to free it on any send failure, before a retransmit copy existed, so nothing could resend it: the server never verified the client and the connection stalled until the idle timeout. The client now holds the bytes in `pending_hs_messages`, queues the connection on the endpoint's bounded pending-handshake retry (previously server-only), and marks the Finished sent only after a submission succeeds (SONNY-4791, carried over from !56).
+- Serialize `closeStream`, `resetStream` and the STOP_SENDING response with stream writes. They emitted a packet without holding the connection lock, so a concurrent writer could take the same packet number, which also reuses the AEAD nonce (SONNY-4776).
+- macOS/BSD: put the UDP socket into non-blocking mode with `O_NONBLOCK`. The old code passed `SOCK_NONBLOCK` (a socket-creation flag, a Zig-only shim on Darwin) to `F_SETFL`, which could leave `recvfrom` blocked after a batch was drained; `fcntl` failures are now reported. Timestamps and sleeps go through the portable `compat` helpers instead of Linux syscalls, and the self-signed certificate helper no longer uses the global single-threaded `Io`, whose allocator always fails.
 
 ### CI
 
