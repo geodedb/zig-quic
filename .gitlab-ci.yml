@@ -1044,6 +1044,7 @@ test-perf-rounds:
 
 workflow:
   auto_cancel:
+    on_job_failure: all
     on_new_commit: interruptible
   rules:
     - if: '$CI_COMMIT_TAG'
@@ -1054,7 +1055,7 @@ workflow:
         on_job_failure: all
     - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
       when: never
-    # Stop failed validation runs without interrupting default-branch or tag work.
+    # Preserve the branch rule; global cancellation also covers main and tags.
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
       auto_cancel:
         on_job_failure: all
