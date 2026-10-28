@@ -1,6 +1,26 @@
 # Security Review Notes
 
-Last updated: 2026-04-26
+Last updated: 2026-10-11
+
+## October client security follow-up (SONNY-4795)
+
+Go interop modules and CI now use Go 1.26.9, including the fix for
+[GO-2026-6607](https://pkg.go.dev/vuln/GO-2026-6607). Rust client lockfiles include
+patched Quinn, Rustls, anyhow, and rand dependencies. See
+[RUSTSEC-2026-0185](https://rustsec.org/advisories/RUSTSEC-2026-0185),
+[RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285),
+[RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190), and
+[RUSTSEC-2026-0097](https://rustsec.org/advisories/RUSTSEC-2026-0097).
+
+Run `sh scripts/check-client-security.sh go` and
+`sh scripts/check-client-security.sh rust` from any working directory. The driver
+scans every target in a separate working directory, aggregates failures, and
+returns nonzero if any build or audit fails. Rust audits also reject unsoundness
+advisories, which cargo-audit otherwise treats as warnings. Standalone Go programs
+are built in a fresh temporary directory and scanned only after a successful build.
+`python3 scripts/test_client_security.py` exercises failure handling and scan coverage.
+
+The April review evidence below records the earlier versions and results.
 
 ## Orientation
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const tls13 = @import("quic_tls13");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -20,6 +21,7 @@ inline fn trace(comptime fmt: []const u8, args: anytype) void {
 pub fn bind(comptime Connection: type) type {
     return struct {
         const hashForSecret = crypto_utils.hashForSecret;
+        const frame_ack_max_ranges = 64; // frame/ack.zig max_ack_ranges
 
         fn trackAppStreamPacket(
             self: *Connection,
@@ -50,9 +52,64 @@ pub fn bind(comptime Connection: type) type {
             gop.value_ptr.* = entry;
         }
 
-        fn dropAckedStreamTracking(self: *Connection, acked: []const u64) void {
+        /// Inclusive packet-number interval acknowledged by one ACK range.
+        const AckedInterval = struct { lo: u64, hi: u64 };
+
+        /// Decode an ACK frame's ranges (RFC 9000 §19.3.1) into inclusive
+        /// [lo, hi] intervals, newest first. Unlike the PN enumeration fed to
+        /// recovery, this is not capped by the number of packets acknowledged:
+        /// one interval per range, bounded by the frame's range count.
+        fn ackedIntervals(largest: u64, first_range: u64, ranges: []const frame.AckRange, out: []AckedInterval) []AckedInterval {
+            if (out.len == 0) return out[0..0];
+            var n: usize = 0;
+            const first_lo = if (largest >= first_range) largest - first_range else 0;
+            out[n] = .{ .lo = first_lo, .hi = largest };
+            n += 1;
+            var smallest = first_lo;
+            for (ranges) |r| {
+                if (n >= out.len) break;
+                // Next range's largest = smallest - gap - 2.
+                const step = r.gap +| 2;
+                if (smallest < step) break;
+                const hi = smallest - step;
+                const lo = if (hi >= r.len) hi - r.len else 0;
+                out[n] = .{ .lo = lo, .hi = hi };
+                n += 1;
+                smallest = lo;
+                if (smallest == 0) break;
+            }
+            return out[0..n];
+        }
+
+        fn pnInAckedIntervals(intervals: []const AckedInterval, pn: u64) bool {
+            for (intervals) |iv| {
+                if (pn > iv.hi) return false; // intervals are descending
+                if (pn >= iv.lo) return true;
+            }
+            return false;
+        }
+
+        /// Drop retransmission state for every tracked STREAM packet the
+        /// peer's ACK frame covers.
+        ///
+        /// This must test range membership rather than walk an enumerated PN
+        /// list: the enumeration handed to recovery is capped (256 PNs), so a
+        /// wide ACK range would leave acknowledged packets tracked. Exact
+        /// removal here is what lets every entry still tracked below the
+        /// largest acknowledged PN be treated as unacknowledged data.
+        fn dropAckedStreamTracking(self: *Connection, intervals: []const AckedInterval) void {
             if (!self.app_stream_retx_init) return;
-            for (acked) |pn| {
+            if (intervals.len == 0) return;
+            var acked_pns: std.ArrayList(u64) = .empty;
+            defer acked_pns.deinit(self.allocator.*);
+            var it = self.app_stream_retx.iterator();
+            while (it.next()) |entry| {
+                const pn = entry.key_ptr.*;
+                if (pnInAckedIntervals(intervals, pn)) {
+                    acked_pns.append(self.allocator.*, pn) catch break;
+                }
+            }
+            for (acked_pns.items) |pn| {
                 if (self.app_stream_retx.fetchRemove(pn)) |removed| {
                     self.allocator.free(removed.value.data);
                 }
@@ -171,48 +228,15 @@ pub fn bind(comptime Connection: type) type {
                 retransmitted += 1;
             }
 
-            // Cumulative-ACK prune. dropAckedStreamTracking only removes the PNs
-            // explicitly enumerated from this ACK's ranges, and that enumeration
-            // is capped at 256 PNs in onAckReceivedSpace. On a long-lived
-            // connection with sustained sequential request/response cycles, the
-            // span from the oldest tracked STREAM packet to `largest` eventually
-            // exceeds that cap, so cumulatively-acknowledged packets below the cap
-            // window are never removed — app_stream_retx then grows ~1 entry per
-            // request and retransmitLostStreamPackets re-scans the whole map on
-            // every ACK (the secondary O(n^2) accumulator).
-            //
-            // RFC 9000 §13.2.1 + RFC 9002 §6.1: a packet far enough below the
-            // largest acknowledged PN is either covered by the peer's cumulative
-            // ACK (delivered) or would already have been declared lost by
-            // recovery's packet-threshold detection (kPacketThreshold = 3). Any
-            // such packet that recovery no longer tracks as in-flight or lost has
-            // been fully resolved and can be dropped. We keep a generous reorder
-            // margin and never drop a packet recovery still reports as `.lost`
-            // (those are handled by the retransmit loop above), so this cannot
-            // discard application data that still needs retransmission.
-            if (largest_acked_opt) |largest_acked| {
-                const reorder_margin: u64 = 16; // >> kPacketThreshold (3)
-                if (largest_acked > reorder_margin) {
-                    const prune_below = largest_acked - reorder_margin;
-                    var stale: std.ArrayList(u64) = .empty;
-                    defer stale.deinit(self.allocator.*);
-                    var pit = self.app_stream_retx.iterator();
-                    while (pit.next()) |entry| {
-                        const pn = entry.key_ptr.*;
-                        if (pn >= prune_below) continue;
-                        // Leave anything recovery still considers unresolved.
-                        switch (self.rec.getPacketDeliveryState(.Application, pn)) {
-                            .lost, .in_flight => continue,
-                            .acked, .unknown => stale.append(self.allocator.*, pn) catch break,
-                        }
-                    }
-                    for (stale.items) |pn| {
-                        if (self.app_stream_retx.fetchRemove(pn)) |removed| {
-                            self.allocator.free(removed.value.data);
-                        }
-                    }
-                }
-            }
+            // No cumulative "prune below largest" pass here. Recovery compacts
+            // a packet away as soon as it is declared lost, so a lost packet
+            // and an acknowledged one both report `.unknown` from
+            // getPacketDeliveryState(). The old prune could not tell them
+            // apart and freed lost STREAM data that the 2-per-ACK budget above
+            // had not reached yet; after a burst of receive-buffer drops the
+            // stream was left with a permanent hole and stalled. Acknowledged
+            // packets are now removed exactly by dropAckedStreamTracking()
+            // (ACK range membership), so the map stays bounded by unacked data.
         }
 
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
@@ -431,12 +455,7 @@ pub fn bind(comptime Connection: type) type {
 
             if (cur_off >= peer_stream_limit) {
                 // Signal STREAM_DATA_BLOCKED and re-emit periodically while blocked.
-                const now_ns = blk: {
-                    var ts: std.os.linux.timespec = undefined;
-                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                    if (rc != 0) break :blk @as(i128, 0);
-                    break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                };
+                const now_ns = compat.nanoTimestamp();
                 if (self.last_stream_data_blocked_limit != peer_stream_limit or
                     now_ns - self.last_stream_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
                 {
@@ -454,12 +473,7 @@ pub fn bind(comptime Connection: type) type {
             // Enforce connection-level MAX_DATA
             if (self.conn_send_off >= peer_conn_limit) {
                 // Signal DATA_BLOCKED and re-emit periodically while blocked.
-                const now_ns = blk2: {
-                    var ts: std.os.linux.timespec = undefined;
-                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                    if (rc != 0) break :blk2 @as(i128, 0);
-                    break :blk2 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                };
+                const now_ns = compat.nanoTimestamp();
                 if (self.last_data_blocked_limit != peer_conn_limit or
                     now_ns - self.last_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
                 {
@@ -530,12 +544,7 @@ pub fn bind(comptime Connection: type) type {
             // the next step.
             const include_app_ack = self.pn_app.have_any;
             if (include_app_ack) {
-                const now_ns: u64 = @intCast(blk3: {
-                    var ts: std.os.linux.timespec = undefined;
-                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                    if (rc != 0) break :blk3 @as(i128, 0);
-                    break :blk3 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                });
+                const now_ns: u64 = @intCast(compat.nanoTimestamp());
                 const ad = self.buildAckApp();
                 const ack_delay = self.getAckDelayEncoded(.Application, now_ns);
                 const ack_ecn = self.getAckEcn(.Application);
@@ -670,6 +679,11 @@ pub fn bind(comptime Connection: type) type {
         /// RFC 9000 §3.3: Signals the peer that no more data will be sent on this
         /// stream. For abrupt termination with an error code, use `resetStream`.
         pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
+            // SONNY-4776: share the writer's critical section through packet
+            // emission and PN advancement; a reused PN also reuses the AEAD nonce.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             _ = app_error_code;
             if (id == 0) {
                 if (!self.stream_send_state.canWrite() or self.stream_send_aborted) return error.StreamStopped;
@@ -716,6 +730,10 @@ pub fn bind(comptime Connection: type) type {
         ///
         /// QUIC-H3-001: Public API for HTTP/3 adapters to reset streams on error.
         pub fn resetStream(self: *Connection, id: u64, app_error_code: u64) !void {
+            // Serialize terminal state and packet emission with writes and FINs.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             // Validate stream exists
             if (id == 0) {
                 if (!self.stream_send_state.canWrite() or self.stream_send_aborted) return error.StreamStopped;
@@ -765,6 +783,11 @@ pub fn bind(comptime Connection: type) type {
         /// Handle STOP_SENDING by responding with RESET_STREAM carrying our final size.
         /// Process incoming STOP_SENDING frame; respond with RESET_STREAM if not already closed.
         pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
+            // SONNY-4776 / SONNY-4379: frame dispatch releases mu before
+            // calling here; protect this RESET_STREAM packet like explicit resets.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
             // Mark stream as aborted for sending further STREAM frames
@@ -921,15 +944,11 @@ pub fn bind(comptime Connection: type) type {
             }
             const acked = buf[0..count];
             if (space == .Application) {
-                dropAckedStreamTracking(self, acked);
+                var interval_buf: [frame_ack_max_ranges + 1]AckedInterval = undefined;
+                dropAckedStreamTracking(self, ackedIntervals(largest, first_range, ranges, &interval_buf));
             }
             // Update recovery for given space
-            const now_i = blk4: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk4 @as(i128, 0);
-                break :blk4 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
             if (res.bytes_acked > 0) {
@@ -1028,12 +1047,7 @@ pub fn bind(comptime Connection: type) type {
             // Fast path: skip syscall + computation if timer already armed
             if (self.pto_app_active) return;
             // Use Recovery to compute PTO deadline for Application space only
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Application, now_ns);
             if (next_deadline == null) return;
@@ -1110,12 +1124,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
             // Fast path: skip syscall + computation if already armed or keys dropped
             if (self.pto_initial_active or self.initial_keys_dropped) return;
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Initial, now_ns);
             if (next_deadline == null) return;
@@ -1133,12 +1142,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.pto_handshake_active) return;
             // Skip if handshake TX keys are already dropped (connection is established)
             if (self.hs_tx_keys == null and self.app_tx_keys != null) return;
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Handshake, now_ns);
             if (next_deadline == null) return;

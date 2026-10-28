@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use quinn::{ClientConfig, Connection};
-use rand::RngCore;
+use rand::Rng;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -210,7 +210,7 @@ async fn test_large_data_transfer(conn: &Connection, size: usize) -> TestResult 
 
         // Generate random data
         let mut data = vec![0u8; size];
-        rand::thread_rng().fill_bytes(&mut data);
+        rand::rng().fill_bytes(&mut data);
 
         // Send data
         send.write_all(&data).await?;

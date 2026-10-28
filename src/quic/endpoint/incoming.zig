@@ -24,6 +24,7 @@
 //! - RFC 3168: Explicit Congestion Notification (ECN)
 
 const std = @import("std");
+const compat = @import("compat");
 const logger = @import("quic_logger");
 const conn_mod = @import("quic_conn");
 const packet = @import("packet");
@@ -446,12 +447,7 @@ pub fn prepareInitialConnection(
         const token_mod = @import("token");
         const client_ip_bytes = peer.getIpBytes();
         const secret = ctx.cfg.token_secret orelse ctx.generated_token_secret;
-        const now_ns: i128 = now_block: {
-            var ts: std.os.linux.timespec = undefined;
-            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-            if (rc != 0) break :now_block @as(i128, 0);
-            break :now_block @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-        };
+        const now_ns: i128 = compat.nanoTimestamp();
         const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
         var retry_odcid_buf: [20]u8 = undefined;
         const retry_odcid = if (ctx.cfg.enable_retry and token_bytes.len > 0)
@@ -678,12 +674,7 @@ pub fn processInitialResolved(
         // Use user-provided secret if available, otherwise use the cryptographically
         // random secret generated at endpoint init (never use a hardcoded fallback)
         const secret = ctx.cfg.token_secret orelse ctx.generated_token_secret;
-        const now_ns: i128 = blk: {
-            var ts: std.os.linux.timespec = undefined;
-            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-            if (rc != 0) break :blk @as(i128, 0);
-            break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-        };
+        const now_ns: i128 = compat.nanoTimestamp();
         const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
 
         if (token_mod.verify(token_bytes, client_ip_bytes, secret, now_ms)) {
@@ -831,12 +822,7 @@ pub fn processInitialResolved(
     var offset: usize = 0;
     var saw_crypto: bool = false;
     var saw_ack_eliciting: bool = false;
-    const now_ns: u64 = @intCast(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    });
+    const now_ns: u64 = @intCast(compat.nanoTimestamp());
 
     logger.debugPrint("[processInitial] Decrypted payload length: {} bytes\n", .{decrypted.payload.len});
 

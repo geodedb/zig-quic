@@ -1679,8 +1679,33 @@ pub const Connection = struct {
         }
     }
 
+    /// Mark the connection doomed and drain in-flight endpoint RX refs.
+    ///
+    /// Blocks until every poll worker pinning this connection has released its
+    /// ref. MUST NOT be called while holding `Endpoint.mu`: a pinned worker may
+    /// need `Endpoint.mu` before it can release (see the lock-order comment on
+    /// `Endpoint.mu`). `Endpoint.destroyConnections` uses the split
+    /// `markEndpointDestroying` + `waitEndpointRxRefsDrained` pair instead.
     pub fn beginEndpointDestroy(self: *Connection) void {
+        self.markEndpointDestroying();
+        self.waitEndpointRxRefsDrained();
+    }
+
+    /// Refuse new endpoint RX refs from now on. Non-blocking; safe under
+    /// `Endpoint.mu`.
+    pub fn markEndpointDestroying(self: *Connection) void {
         self.endpoint_destroying.store(true, .release);
+    }
+
+    /// True while at least one poll worker still pins this connection.
+    pub fn hasEndpointRxRefs(self: *const Connection) bool {
+        return self.endpoint_rx_refs.load(.acquire) != 0;
+    }
+
+    /// Block until no poll worker pins this connection. Call only after
+    /// `markEndpointDestroying` (otherwise new refs can keep arriving) and
+    /// never while holding `Endpoint.mu`.
+    pub fn waitEndpointRxRefsDrained(self: *Connection) void {
         const io = std.Io.Threaded.global_single_threaded.io();
         while (true) {
             const refs = self.endpoint_rx_refs.load(.acquire);

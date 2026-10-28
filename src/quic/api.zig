@@ -438,6 +438,14 @@ pub fn resetStream(conn: *Connection, stream_id: QuicStreamId, app_error_code: u
 }
 
 /// Remove a connection from all endpoint bookkeeping and free it.
+///
+/// Locking: when other threads poll `ep`, the caller MUST hold `ep.mu` (and,
+/// like geode, should take `ep.pto_lifetime_mu` first). If a poll worker still
+/// pins the connection, `ep.mu` is released while waiting for that worker and
+/// re-acquired before return (see the lock order on `Endpoint.mu`), so state
+/// read under `ep.mu` before the call must be re-validated after it.
+/// Single-threaded callers that poll and destroy on one thread never hold a
+/// pin at this point and need no lock.
 pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
     // Single-element batch — identical teardown to the historical inline body
     // (mark + route-cache clear → remove from accepted/retired/conns → timers →
@@ -448,7 +456,8 @@ pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
 /// Tear down many connections in one sweep of the endpoint connection map
 /// instead of one O(map) scan per connection. The server drain loop uses this to
 /// bound the `mu` hold while freeing a connection-churn backlog (acceptor-wedge
-/// fix). Caller MUST hold the endpoint mutex, exactly as for `destroy`.
+/// fix). Caller MUST hold the endpoint mutex, exactly as for `destroy`; the
+/// mutex may be released and re-acquired inside (see `destroy`).
 pub fn destroyBatch(ep: *QuicEndpoint, conns: []const *Connection) void {
     ep.destroyConnections(conns);
 }

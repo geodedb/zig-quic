@@ -20,6 +20,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Keep unsent TLS output across temporary blocked sends and retry through the
   endpoint queue before marking the client Finished as sent.
 
+### CI
+
+- The paired perf gate builds each micro benchmark suite as its own executable (`zig build bench-isolated`) once both compared commits support it. Changes to unrelated code no longer move a micro suite's hot loops in the shared `bench` binary, which had failed `micro/aead chacha20_poly1305` on an endpoint-only change (!80). Thresholds and rows are unchanged.
+
+## [0.1.47] - 2026-10-24
+
+### Fixed
+
+- Stop freeing lost STREAM data before it is retransmitted. Recovery forgets a packet as soon as it declares it lost, so a lost packet and an acknowledged one looked the same to the "prune below largest ACK" pass, which then freed the lost data. A burst of losses bigger than the two-packets-per-ACK retransmit budget left a permanent hole in the stream, and the transfer stalled. This happened on hosts whose kernel caps the UDP receive buffer at about 212 KB (the Docker/AWS `net.core.rmem_max` default), where Geode `backup create` hung at 0%. Acknowledged STREAM packets are now released by ACK range membership, which also covers ACKs that span more than the 256 packet numbers passed to recovery.
+
+### Security
+
+- Rust clients: tokio 1.53.3 (RUSTSEC-2026-0386, `AsyncFd::new` I/O-safety unsoundness).
+
+### CI
+
+- Drop the GitLab enterprise SAST, dependency-scanning, and secrets scanner components. Gitleaks, SBOM scanning, cargo-audit, govulncheck, and safety still run, and the remaining CI catalog components are pinned to a commit.
+
+## [0.1.46] - 2026-10-20
+
+### Fixed
+
+- Keep the client's Handshake keys and its Finished retransmission data until the handshake is confirmed (HANDSHAKE_DONE), per RFC 9001 §4.9.2. The client used to drop them as soon as it installed 1-RTT keys, so a lost client Finished could never be retransmitted: the server never got 1-RTT keys and dropped every request the client sent. The Handshake PTO probe now resends the Finished.
+
+### Security
+
+- Rust clients: rustls-webpki 0.103.16 (RUSTSEC-2026-0382) and webpki-root-certs 1.0.10 (RUSTSEC-2026-0383).
+
+### CI
+
+- `create-release` authenticates with the CI job token instead of `GITLAB_TOKEN`, so tag pipelines create the GitLab release.
+
+## [0.1.45] - 2026-10-13
+
+### Changed
+
+- Update dependencies: tls v0.1.24, thread_pool v0.2.9, otel v0.1.28 (lazy) and fips v0.1.3 (lazy). These are the versions the rest of the devnw/zig ecosystem's newest tags pin, so downstream graphs converge without diamonds. The Python test clients move to aioquic 1.6.1.
+- The micro performance gate (`quality-zig-gates`) is now noise-tolerant. A regression must exceed absolute floors (p95 by more than 3 ns, per-op time by more than 1 ns), and with `PERF_GATE_ROUNDS > 1` it must reproduce: rounds are captured in alternating order, and every HEAD round must be worse than every baseline round. See `docs/PERFORMANCE_TARGETS.md#noise-tolerance`.
+
+### Fixed
+
+- Fix a deadlock between connection teardown and endpoint poll workers. `Endpoint.destroyConnections` (`api.destroy` / `api.destroyBatch`) waited for a connection's in-flight RX refs while the caller held `Endpoint.mu`, and a poll worker holding such a ref needed `Endpoint.mu` (`maybeQueueDeferredAccepted`) before releasing it. Teardown now detaches the connection under `mu`, releases `mu` while waiting for the ref to drain, then re-acquires it to free the connection. A doomed connection is never published to the accept queue, and destroy now also clears the closed / PTO-dirty / pending-handshake side sets. The lock order is documented on `Endpoint.mu`.
+- Preserve every received datagram of a mixed receive batch within the existing processing quotas (receive-tail accounting).
+- `fips-deps`: fetch pinned OpenSSL release keys from keyserver.ubuntu.com when keys.openpgp.org serves them without user IDs.
+
+### Notes
+
+- v0.1.41 to v0.1.44 were tagged from a side branch (GAP-0838 grpc_zig convergence) whose only dependency change, otel v0.1.24, is superseded here. v0.1.45 is the first tag since v0.1.40 that is cut from `main`.
+
 ## [0.1.40] - 2026-09-12
 
 ### Changed

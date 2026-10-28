@@ -40,6 +40,19 @@ paths = [
   '''specs/.*\.txt$''',
 ]
 
+# Allowlist regexes are matched against the LINE (regexTarget), not just the
+# captured secret, so the variable-name anchor scopes the exemption.
+regexTarget = "line"
+regexes = [
+  # OpenSSL release-signing PGP key FINGERPRINTS: public data (published at
+  # https://www.openssl.org/source/), pinned by scripts/install-openssl-fips.sh
+  # to verify tarball authenticity. generic-api-key matches any long hex
+  # constant; these are verification anchors, not credentials. Scoped to the
+  # exact variable names so a real 40-hex secret elsewhere still trips the
+  # rule. Same entry as devnw/zig/fts-storage's .gitleaks.toml.
+  '''OPENSSL_RELEASE_KEY_(CURRENT|PREVIOUS)="[0-9A-F]{40}"''',
+]
+
 # Stopwords for variable/function names that contain "secret" but are not secrets
 # These are legitimate code identifiers, not actual credentials
 stopwords = [

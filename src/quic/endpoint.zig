@@ -29,6 +29,7 @@
 //! from RFC 9002 (§6). TLS credential loading follows RFC 9001 §4 requirements.
 
 const std = @import("std");
+const compat = @import("compat");
 const cfg = @import("config.zig");
 const lb = @import("loop_backend.zig");
 const conn_mod = @import("quic_conn");
@@ -271,11 +272,8 @@ inline fn addrToNetwork(value: u32) u32 {
 }
 
 fn nowNsMonotonic() i128 {
-    // Use clock_gettime for monotonic time (Zig 0.16 removed std.time.nanoTimestamp).
-    var ts: std.os.linux.timespec = undefined;
-    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-    if (rc != 0) return 0;
-    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    // Keep the wall-clock domain used by the connection and recovery deadlines.
+    return compat.nanoTimestamp();
 }
 
 fn elapsedNsSince(start_ns: i128) u64 {
@@ -644,7 +642,21 @@ pub const Endpoint = struct {
     //
     // mu: Primary lock protecting connection map (conns), accepted queue, retired list.
     //     Also used by processIncomingDatagram which mutates connection state.
-    //     Lock ordering: endpoint.mu -> connection.mu (never reverse)
+    //
+    //     Lock order (acquire left to right, never the reverse):
+    //       pto_lifetime_mu -> mu -> timer_mu -> connection.mu
+    //       mu -> {closed_conn_mu, pto_dirty_mu, pending_hs_send_mu,
+    //              short-header route-cache slot mu}   (leaf locks)
+    //
+    //     Connection.endpoint_rx_refs (the poll-worker RX pin) behaves like a
+    //     lock that is taken BEFORE mu: a worker pins a connection, drops mu,
+    //     and may re-acquire mu while still pinned (maybeQueueDeferredAccepted).
+    //     Therefore NEVER wait for RX pins to drain -- nor join, block on, or
+    //     wait for any poll worker -- while holding mu. Teardown marks the
+    //     connection `endpoint_destroying` and detaches it under mu, releases
+    //     mu to wait for the pins, then re-acquires mu to free it (see
+    //     destroyConnections). Signalling (accept_cv, futexWake) under mu is
+    //     fine; waiting is not.
     mu: std.Io.Mutex = std.Io.Mutex.init,
 
     // timer_mu: Separate lock for timer queue and next_timer_id.
@@ -1165,7 +1177,10 @@ pub const Endpoint = struct {
         var enqueued = false;
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
 
-        if (c.closed or c.role != .Server) {
+        // A connection being torn down must never reach the accept queue: the
+        // teardown may have dropped `mu` to wait for this very worker's RX ref,
+        // and an accept() caller could otherwise pop a pointer about to be freed.
+        if (c.closed or c.role != .Server or c.endpoint_destroying.load(.acquire)) {
             self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             return;
         }
@@ -1474,59 +1489,95 @@ pub const Endpoint = struct {
     /// so a partially-removed connection can never leave a dangling map pointer.
     ///
     /// The caller MUST hold `self.mu` — same contract as the per-conn destroy
-    /// path; `conns`/`accepted`/`retired` are not internally synchronized, and
-    /// the `endpoint_destroying` flag set below is the batch-membership marker
-    /// for the sweep, which is only valid while no concurrent destroy can run.
+    /// path; `conns`/`accepted`/`retired` are not internally synchronized.
+    ///
+    /// LOCK ORDER: if a poll worker still pins a member (endpoint RX ref), this
+    /// function RELEASES `self.mu` while it waits for the pin to drop, then
+    /// re-acquires it before returning. A pinned worker may itself need
+    /// `self.mu` before it can unpin (maybeQueueDeferredAccepted), so waiting
+    /// with `mu` held deadlocks — the v0.1.44 hang (gdb: conn.zig
+    /// beginEndpointDestroy / endpoint.zig destroyConnections). Callers must
+    /// therefore not rely on `mu` staying held across this call: anything they
+    /// snapshotted under `mu` before the call must be re-validated after it.
+    /// Other locks the caller holds (geode: `pto_lifetime_mu`,
+    /// its pending-destroy mutex) stay held; no RX-ref holder takes those.
     pub fn destroyConnections(self: *Endpoint, batch: []const *conn_mod.Connection) void {
         if (batch.len == 0) return;
+        const io = std.Io.Threaded.global_single_threaded.io();
 
-        // Phase 1: mark every member `endpoint_destroying` (which also drains its
-        // in-flight endpoint RX refs so no poll worker is mid-processing it) and
-        // clear its short-header route-cache slots. The flag is set only here and
-        // only under `mu`, so it uniquely identifies THIS batch for the sweeps
-        // below.
+        // Phase 1: mark every member `endpoint_destroying` so no poll worker can
+        // pin it from here on (acquireEndpointRxRef refuses), and so a pinned
+        // worker that reaches maybeQueueDeferredAccepted will not publish it.
+        // Non-blocking: nothing waits under `mu` here.
+        for (batch) |conn| conn.markEndpointDestroying();
+
+        // Phase 2: detach — sweep the connection map ONCE, removing every key
+        // whose owner is being destroyed, then drop members from the accepted +
+        // retired lists (one pass each). After this no endpoint table can lead a
+        // new lookup or an accept() caller to a member.
+        self.detachDestroyingConnections(batch);
+
+        // Phase 3: wait for poll workers that pinned a member BEFORE Phase 1.
+        // Only drop `mu` when someone actually holds a pin (the common case is
+        // no pin, which keeps the historical single-critical-section behaviour).
+        var pinned = false;
         for (batch) |conn| {
-            conn.beginEndpointDestroy();
-            self.clearShortHeaderRouteCacheForConnection(conn);
+            if (conn.hasEndpointRxRefs()) {
+                pinned = true;
+                break;
+            }
+        }
+        if (pinned) {
+            self.mu.unlock(io);
+            for (batch) |conn| conn.waitEndpointRxRefsDrained();
+            self.mu.lockUncancelable(io);
+            // While `mu` was free a pinned worker or another poll thread could
+            // have re-linked a member (pruneClosed -> retired, the deferred
+            // accept path -> accepted). Detach again now that every pin is gone.
+            self.detachDestroyingConnections(batch);
         }
 
-        // Phase 2: sweep the connection map ONCE, removing every key whose owner
-        // is a batch member.
-        self.sweepDestroyingFromConnMap(batch);
-
-        // Phase 3: drop members from the accepted + retired lists (one pass each).
-        dropDestroyingFromConnList(&self.accepted);
-        dropDestroyingFromConnList(&self.retired);
-
-        // Phase 4: per-member finalize — pending work and timers, then free.
-        // All map/list removal happens before any
-        // deinit, so no freed pointer is ever reachable from the endpoint.
+        // Phase 4: per-member finalize. Every pin is gone, so the route cache
+        // and endpoint side sets can no longer be repopulated for a member.
+        // Order preserved from the per-conn destroy tail: all map/list removal
+        // happens before any deinit, so no freed pointer is reachable from the
+        // endpoint.
         for (batch) |conn| {
-            self.removePendingWorkForConnection(conn);
+            self.clearShortHeaderRouteCacheForConnection(conn);
+            self.removeConnectionFromSideSets(conn);
             self.removeTimersForConnection(conn);
             conn.deinit();
             self.allocator.destroy(conn);
         }
     }
 
-    /// Caller has marked the connection destroying and drained its RX/work refs.
-    /// Remove pending pointers under the same leaf locks used by poll snapshots.
-    fn removePendingWorkForConnection(self: *Endpoint, conn: *conn_mod.Connection) void {
+    /// Remove every map/list entry owned by a connection that is being
+    /// destroyed. Caller holds `mu`.
+    fn detachDestroyingConnections(self: *Endpoint, batch: []const *conn_mod.Connection) void {
+        self.sweepDestroyingFromConnMap(batch);
+        dropDestroyingFromConnList(&self.accepted);
+        dropDestroyingFromConnList(&self.retired);
+    }
+
+    /// Drop `conn` from the closed / PTO-dirty / pending-handshake side sets,
+    /// which hold raw connection pointers outside `conns`. A worker pinning the
+    /// connection can re-insert into these after an earlier caller-side
+    /// cleanup, so destroy repeats the removal once all pins are drained.
+    /// Caller holds `mu`; the side-set mutexes are leaf locks under it.
+    fn removeConnectionFromSideSets(self: *Endpoint, conn: *conn_mod.Connection) void {
         const io = std.Io.Threaded.global_single_threaded.io();
+
+        self.closed_conn_mu.lockUncancelable(io);
+        if (self.closed_conn_set.remove(conn)) _ = self.closed_conn_count.fetchSub(1, .acq_rel);
+        self.closed_conn_mu.unlock(io);
+
         self.pto_dirty_mu.lockUncancelable(io);
-        _ = self.pto_dirty_set.remove(conn);
-        self.pto_dirty_count.store(self.pto_dirty_set.count(), .release);
+        if (self.pto_dirty_set.remove(conn)) _ = self.pto_dirty_count.fetchSub(1, .acq_rel);
         self.pto_dirty_mu.unlock(io);
 
         self.pending_hs_send_mu.lockUncancelable(io);
-        _ = self.pending_hs_send_set.remove(conn);
-        self.pending_hs_send_count.store(self.pending_hs_send_set.count(), .release);
+        if (self.pending_hs_send_set.remove(conn)) _ = self.pending_hs_send_count.fetchSub(1, .acq_rel);
         self.pending_hs_send_mu.unlock(io);
-
-        self.closed_conn_mu.lockUncancelable(io);
-        _ = self.closed_conn_set.remove(conn);
-        self.closed_conn_count.store(self.closed_conn_set.count(), .release);
-        self.closed_conn_mu.unlock(io);
     }
 
     /// Remove every `conns` entry whose owner is currently `endpoint_destroying`
@@ -1534,6 +1585,8 @@ pub const Endpoint = struct {
     /// so the doomed keys are collected first. On allocation failure it falls
     /// back to the allocation-free per-conn exhaustive scan so a destroy can
     /// never be skipped under memory pressure (correctness over speed).
+    /// If another destroy batch is waiting with `mu` released, its members are
+    /// swept here too; that is harmless, they must leave the map anyway.
     fn sweepDestroyingFromConnMap(self: *Endpoint, batch: []const *conn_mod.Connection) void {
         var doomed: std.ArrayList(Key) = .empty;
         defer doomed.deinit(self.allocator);
@@ -2023,7 +2076,12 @@ pub const Endpoint = struct {
             drain_loop: while (true) {
                 if (stats.packets_processed >= max_packets_this_poll) break :drain_loop;
                 const packet_budget_left = max_packets_this_poll - stats.packets_processed;
-                const recv_limit = @min(recv_slots.len, packet_budget_left);
+                // A short-header quota can stop processing within a mixed
+                // receive batch. Never read more slots than can be consumed
+                // even if every packet is short; the tail then stays owned by
+                // the transport for the next poll instead of being abandoned.
+                const short_header_budget_left = max_short_header_packets_this_poll - short_header_packets_processed;
+                const recv_limit = @min(recv_slots.len, @min(packet_budget_left, short_header_budget_left));
 
                 // 4a: Receive batch (no lock needed for transport recv)
                 const batch_n = self.transport.recvBatch(recv_slots[0..recv_limit]) catch |err| {
@@ -3432,6 +3490,16 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
     // Report bytes as accepted; actual socket send happens when the timer fires.
     return data.len;
 }
+
+/// Test-only entry points into private endpoint paths, used by regression tests
+/// that must drive the real code (not a copy) through a forced interleaving.
+pub const testing_hooks = struct {
+    /// The post-RX deferred-accept step that the short-header poll worker runs
+    /// while it still holds an endpoint RX ref on `c`.
+    pub fn queueDeferredAccepted(ep: *Endpoint, c: *conn_mod.Connection) void {
+        ep.maybeQueueDeferredAccepted(c);
+    }
+};
 
 // Legacy poll_* functions removed - dead code (never called)
 // Modern poll_*_backend() functions are used instead

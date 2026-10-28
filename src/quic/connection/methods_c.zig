@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const recovery = @import("quic_recovery");
@@ -68,12 +69,7 @@ pub fn bind(comptime Connection: type) type {
         /// Bookkeeping when a short-header packet (1-RTT) is sent: CC accounting & key update thresholds.
         pub fn onShortHeaderPacketSent(self: *Connection, bytes_sent: usize, ack_eliciting: bool) void {
             // Track recovery for Application space
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
 
             // PHASE 51: Debug logging to verify this function is called
@@ -134,7 +130,6 @@ pub fn bind(comptime Connection: type) type {
             const needed_padding: usize = target_udp_payload - header_overhead - aead_tag - 1;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
             const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
             if (needed_padding > 0) {
@@ -191,12 +186,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn onPacketSent(self: *Connection, space: recovery.PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool) void {
             self.markPtoDirty(); // #182: notify endpoint dirty-set
             // Record via Recovery (authoritative)
-            const now_i = blk: {
-                var ts: std.os.linux.timespec = undefined;
-                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                if (rc != 0) break :blk @as(i128, 0);
-                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-            };
+            const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             _ = self.rec.onPacketSent(space, pn, bytes, ack_eliciting, now_ns) catch |err| {
                 logger.err("recovery onPacketSent failed: {s}", .{@errorName(err)});
@@ -619,7 +609,6 @@ pub fn bind(comptime Connection: type) type {
             if (self.pending_new_cid.count() == 0) return 0;
             var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(self.allocator.*);
-            const compat = @import("compat");
             const w = compat.arrayListWriter(&fb, self.allocator.*);
             const wrote = try self.writePendingNewConnectionIds(w, 4);
             if (wrote == 0) return 0;

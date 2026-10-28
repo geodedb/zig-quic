@@ -18,14 +18,13 @@ const test_alpn = [_][]const u8{"h3"};
 const SERVER_SNI = "localhost";
 const PARALLEL_CLIENTS: usize = 32;
 const PAYLOAD_BYTES: usize = 1024;
-const HANDSHAKE_TIMEOUT_MS: i64 = 5_000;
+// On the two-core CI runner, 32 unoptimized TLS handshakes take just over
+// five seconds; optimized builds complete the same setup within that bound.
+// This regression checks stream progress after TLS setup. Keep the release
+// handshake deadline and every stream/FIN assertion, with bounded headroom
+// for Debug's unoptimized cryptography rather than timing out healthy peers.
+const HANDSHAKE_TIMEOUT_MS: i64 = if (builtin.mode == .Debug) 30_000 else 5_000;
 const RT_TIMEOUT_MS: i64 = 7_000;
-
-var next_port = std.atomic.Value(u16).init(19850);
-
-fn allocatePort() u16 {
-    return next_port.fetchAdd(1, .seq_cst);
-}
 
 fn nowMs() i64 {
     var ts: std.os.linux.timespec = undefined;
@@ -268,6 +267,11 @@ const ClientCtx = struct {
     diagnostic: *ClientDiagnostic,
 };
 
+fn recordFailure(ctx: ClientCtx, phase: []const u8) void {
+    std.debug.print("high-parallel client {d} failed at {s}\n", .{ ctx.index, phase });
+    _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+}
+
 fn clientThread(ctx: ClientCtx) void {
     const started = nowMs();
     defer ctx.diagnostic.elapsed_ms = nowMs() - started;
@@ -278,7 +282,7 @@ fn clientThread(ctx: ClientCtx) void {
     };
     var ep = endpoint_mod.Endpoint.init(ctx.allocator, "127.0.0.1:0", &cli_cfg) catch |err| {
         ctx.diagnostic.last_error = err;
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "endpoint init");
         return;
     };
     defer ep.deinit();
@@ -286,7 +290,7 @@ fn clientThread(ctx: ClientCtx) void {
     ctx.diagnostic.phase = "connect";
     const conn = api.connect(&ep, ctx.server_addr, SERVER_SNI) catch |err| {
         ctx.diagnostic.last_error = err;
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "connect");
         return;
     };
 
@@ -323,7 +327,7 @@ fn clientThread(ctx: ClientCtx) void {
         ctx.diagnostic.handshake_received_packets += stats.packets_processed;
     }
     if (!api.isHandshakeConfirmed(conn)) {
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "handshake deadline");
         return;
     }
     var payload: [PAYLOAD_BYTES]u8 = undefined;
@@ -332,7 +336,7 @@ fn clientThread(ctx: ClientCtx) void {
     ctx.diagnostic.phase = "open stream";
     const sid = api.openStream(conn, true) catch |err| {
         ctx.diagnostic.last_error = err;
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "open stream");
         return;
     };
 
@@ -341,12 +345,12 @@ fn clientThread(ctx: ClientCtx) void {
     var sent: usize = 0;
     while (sent < payload.len) {
         if (nowMs() >= rt_deadline) {
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "send deadline");
             return;
         }
         const n = api.writeStream(conn, sid, payload[sent..], false) catch |err| {
             ctx.diagnostic.last_error = err;
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "stream write");
             return;
         };
         if (n == 0) {
@@ -360,7 +364,7 @@ fn clientThread(ctx: ClientCtx) void {
     ctx.diagnostic.phase = "send FIN";
     _ = api.writeStream(conn, sid, &[_]u8{}, true) catch |err| {
         ctx.diagnostic.last_error = err;
-        _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+        recordFailure(ctx, "send FIN");
         return;
     };
 
@@ -374,7 +378,7 @@ fn clientThread(ctx: ClientCtx) void {
         const n = api.readStream(conn, sid, &recv_scratch) catch |err| {
             if (err == error.WouldBlock) continue;
             ctx.diagnostic.last_error = err;
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "stream read");
             return;
         };
         if (n == 0) {
@@ -389,13 +393,13 @@ fn clientThread(ctx: ClientCtx) void {
         }
         if (received + n > payload.len) {
             ctx.diagnostic.phase = "excess echo bytes";
-            _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+            recordFailure(ctx, "echo length");
             return;
         }
         for (recv_scratch[0..n], 0..) |b, i| {
             if (b != payload[received + i]) {
                 ctx.diagnostic.phase = "corrupted echo";
-                _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+                recordFailure(ctx, "echo content");
                 return;
             }
         }
@@ -410,7 +414,7 @@ fn clientThread(ctx: ClientCtx) void {
         }
     }
 
-    _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
+    recordFailure(ctx, "echo or peer FIN deadline");
 }
 
 test "high-parallel connections complete stream echo and FIN without blocking" {
@@ -423,18 +427,18 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
     defer allocator.free(creds.cert_der);
     defer allocator.free(creds.priv_p256);
 
-    const port = allocatePort();
-    var bind_buf: [32]u8 = undefined;
-    const bind_addr = try std.fmt.bufPrint(&bind_buf, "127.0.0.1:{d}", .{port});
-
     var server_cfg = cfg.QuicConfig{
         .alpn = &test_alpn,
         .inline_server_cert_der = creds.cert_der,
         .inline_server_priv_p256 = creds.priv_p256,
         .allow_insecure = true,
     };
-    var server_ep = try endpoint_mod.Endpoint.init(allocator, bind_addr, &server_cfg);
+    // Independent test processes must not share a fixed UDP listener and its
+    // Retry routing. Keep the OS-assigned socket bound for the entire fixture.
+    var server_ep = try endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &server_cfg);
     defer server_ep.deinit();
+    const port = api.getPort(&server_ep);
+    try testing.expect(port != 0);
 
     var target_buf: [32]u8 = undefined;
     const server_target = try std.fmt.bufPrint(&target_buf, "127.0.0.1:{d}", .{port});
@@ -562,16 +566,18 @@ fn expectClientFinishedRecovery(mode: DropClientFinished.Mode) !void {
     const creds = loadServerCreds(allocator) orelse return error.MissingTestCredentials;
     defer allocator.free(creds.cert_der);
     defer allocator.free(creds.priv_p256);
-    var address_buf: [32]u8 = undefined;
-    const address = try std.fmt.bufPrint(&address_buf, "127.0.0.1:{d}", .{allocatePort()});
     const server_cfg = cfg.QuicConfig{
         .alpn = &test_alpn,
         .inline_server_cert_der = creds.cert_der,
         .inline_server_priv_p256 = creds.priv_p256,
         .allow_insecure = true,
     };
-    var server = try endpoint_mod.Endpoint.init(allocator, address, &server_cfg);
+    var server = try endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &server_cfg);
     defer server.deinit();
+    const port = api.getPort(&server);
+    try testing.expect(port != 0);
+    var address_buf: [32]u8 = undefined;
+    const address = try std.fmt.bufPrint(&address_buf, "127.0.0.1:{d}", .{port});
     const client_cfg = cfg.QuicConfig{ .alpn = &test_alpn, .allow_insecure = true };
     var client = try endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &client_cfg);
     defer client.deinit();

@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const tls13 = @import("quic_tls13");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -209,7 +210,6 @@ pub fn bind(comptime Connection: type) type {
 
             var frames_list: std.ArrayList(u8) = .empty;
             defer frames_list.deinit(self.allocator.*);
-            const compat = @import("compat");
             const w = compat.arrayListWriter(&frames_list, self.allocator.*);
             _ = try (frame.Frame{ .handshake_done = {} }).write(w);
             // Do not send MAX_STREAM_DATA for stream 0 unconditionally.
@@ -419,6 +419,28 @@ pub fn bind(comptime Connection: type) type {
                 logger.warn("sendHandshakeCrypto short send: sent={} expected={}", .{ sent, out.len });
                 return error.ShortWrite;
             }
+
+            // Keep the bytes for Handshake PTO retransmission
+            // (sendPtoProbeHandshake resends crypto_retx_handshake). This is
+            // the client's Finished path: without a retransmit copy, a lost
+            // client Finished left the server without 1-RTT keys for good,
+            // and every request the client sent was dropped. Extend a buffer
+            // that ends where this chunk starts; otherwise start a new one.
+            if (self.crypto_retx_handshake) |old_buf| {
+                if (self.crypto_retx_handshake_off + old_buf.len == self.crypto_tx_off_handshake) {
+                    if (self.allocator.realloc(old_buf, old_buf.len + crypto_data.len)) |grown| {
+                        @memcpy(grown[old_buf.len..], crypto_data);
+                        self.crypto_retx_handshake = grown;
+                    } else |_| {}
+                } else if (self.allocator.dupe(u8, crypto_data)) |fresh| {
+                    self.allocator.free(old_buf);
+                    self.crypto_retx_handshake = fresh;
+                    self.crypto_retx_handshake_off = self.crypto_tx_off_handshake;
+                } else |_| {}
+            } else if (self.allocator.dupe(u8, crypto_data)) |fresh| {
+                self.crypto_retx_handshake = fresh;
+                self.crypto_retx_handshake_off = self.crypto_tx_off_handshake;
+            } else |_| {}
 
             // Update state
             if (self.crypto_retx_handshake) |old| self.allocator.free(old);
@@ -1067,10 +1089,7 @@ pub fn bind(comptime Connection: type) type {
         }
 
         fn nowNs() u64 {
-            var ts: std.os.linux.timespec = undefined;
-            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-            if (rc != 0) return 0;
-            const ns = @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            const ns = compat.nanoTimestamp();
             return if (ns <= 0) 0 else @intCast(ns);
         }
 
@@ -1127,7 +1146,6 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.app_tx_keys.?;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
             const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
 
@@ -1248,12 +1266,7 @@ pub fn bind(comptime Connection: type) type {
                     self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
                 );
 
-                const now_ns: u64 = @intCast(@max(0, blk: {
-                    var ts: std.os.linux.timespec = undefined;
-                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                    if (rc != 0) break :blk @as(i128, 0);
-                    break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                }));
+                const now_ns: u64 = @intCast(@max(0, compat.nanoTimestamp()));
 
                 const is_fresh = cache.checkAndRecord(ticket_hash, now_ns) catch {
                     // On allocation failure, reject 0-RTT to be safe.
@@ -1279,7 +1292,6 @@ pub fn bind(comptime Connection: type) type {
             if (!self.canSendUnderAmplification()) return;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
             const w = compat.arrayListWriter(&frames, self.allocator.*);
             var wrote: bool = false;
 
