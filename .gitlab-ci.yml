@@ -795,14 +795,17 @@ stress-integration-20x:
       - stress-results/
     expire_in: 30 days
 
-runtime-smoke-macos-saas:
+runtime-smoke-macos:
   stage: test
   # Installs its own toolchain and uses no Linux build/FIPS artifacts.
+  # Runs on the devnw dedicated Apple Silicon runners (shell executor, so
+  # there is no image to pick; Xcode and python3 come from the host).
   needs: []
   timeout: 15m
-  image: macos-15-xcode-16
   tags:
-    - saas-macos-medium-m1
+    - dedicated
+    - macos
+    - arm
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes:

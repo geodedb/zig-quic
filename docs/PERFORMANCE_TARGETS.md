@@ -160,9 +160,9 @@ portability guardrails for the batched transport path by driving the
 - Verifies that Linux batched syscalls remain behind fallback-safe
   abstractions and compile cleanly for non-Linux targets
 
-Native runtime smoke coverage is also available on GitLab SaaS non-Linux runners:
+Native runtime smoke coverage is also available on non-Linux runners:
 
-- `runtime-smoke-macos-saas` (tag: `saas-macos-medium-m1`, image: `macos-15-xcode-16`)
+- `runtime-smoke-macos` (tags: `dedicated`, `macos`, `arm`; the devnw dedicated Apple Silicon runners)
 - `runtime-smoke-windows-saas` (tag: `saas-windows-medium-amd64`)
 - Both run `src/quic/endpoint/test_udp_batch_runtime_smoke.zig` via:
   - `scripts/native_runtime_smoke.sh` (macOS)
