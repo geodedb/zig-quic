@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const logger = @import("quic_logger");
 const conn_mod = @import("quic_conn");
 const packet = @import("packet");
@@ -196,12 +197,7 @@ pub fn generateAndSendAck(
     ecn_bits: ?u8,
 ) !void {
     const conn = ack_ctx.conn;
-    const now_ns: u64 = @intCast(blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    });
+    const now_ns: u64 = @intCast(compat.nanoTimestamp());
 
     // Test-only debug logging
     if (ack_ctx.test_capture_enabled) {
@@ -399,19 +395,9 @@ pub fn generateAndSendAck(
 
                     if (pkt_len != 0) {
                         const pkt = packet_storage[0..pkt_len];
-                        const send_start_ns = nts: {
-                            var ts: std.os.linux.timespec = undefined;
-                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                            if (rc != 0) break :nts @as(i128, 0);
-                            break :nts @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                        };
+                        const send_start_ns = compat.nanoTimestamp();
                         const sent_ok = sendAppPacketAndTrack(ack_ctx, pkt, false, "ECN ACK");
-                        const send_end_ns = nts2: {
-                            var ts: std.os.linux.timespec = undefined;
-                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                            if (rc != 0) break :nts2 @as(i128, 0);
-                            break :nts2 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                        };
+                        const send_end_ns = compat.nanoTimestamp();
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
 
@@ -498,23 +484,13 @@ pub fn generateAndSendAck(
 
                     if (pkt_len != 0) {
                         const pkt = packet_storage[0..pkt_len];
-                        const send_start_ns = nts3: {
-                            var ts: std.os.linux.timespec = undefined;
-                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                            if (rc != 0) break :nts3 @as(i128, 0);
-                            break :nts3 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                        };
+                        const send_start_ns = compat.nanoTimestamp();
                         // CANARY: REQ=REQ-QUIC-HC-086; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckOnlySingleSend; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
                         // sendAppPacketAndTrack is the single send/accounting
                         // path. Sending once here and once inside the helper
                         // doubled normal ACK traffic during response fan-out.
                         const sent_ok = sendAppPacketAndTrack(ack_ctx, pkt, false, "normal ACK");
-                        const send_end_ns = nts4: {
-                            var ts: std.os.linux.timespec = undefined;
-                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-                            if (rc != 0) break :nts4 @as(i128, 0);
-                            break :nts4 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-                        };
+                        const send_end_ns = compat.nanoTimestamp();
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
 

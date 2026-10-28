@@ -2,15 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2025 CodePros
 
-# Prefer the MR pipeline for feature branches with open MRs. Preserve
-# default-branch/tag releases and scheduled, API, and triggered pipelines.
-workflow:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
-      when: never
-    - when: always
-
 # Catalog jobs without rules default to except:merge_requests. These gates
 # must also run in the MR pipeline that determines merge eligibility.
 .component-verification:
@@ -19,32 +10,46 @@ workflow:
 
 default:
   # Pin to Linux runners. Without the `linux` tag, jobs without an `image:`
-  # directive (e.g. zig-format, gemnasium-dependency_scanning from included
+  # directive (e.g. zig-format from included
   # components) can be picked up by the group's Hosted Windows Runner —
   # whose PowerShell shell-executor then tries to run our bash scripts and
   # fails. All Linux runners (Company Cluster, OVH Dedicated, Lab Servers)
   # carry both `company` and `linux`; the Windows runner does not.
+  #
+  # `x86` keeps every job on the x86_64 Linux pools (OVH Dedicated, AWS Spot).
+  # The ARM lab runner also carries `company,linux`, and when `build` and its
+  # consumers landed on different architectures the e2e jobs got binaries
+  # they could not execute (`quic-client: Syntax error: ")" unexpected`) and
+  # the perf gate compared aarch64 numbers to the x86_64 baseline
+  # (`ENV MISMATCH`). Same tag devnw/zig/ldap uses.
+  interruptible: true
   tags:
     - company
     - linux
+    - x86
 
 include:
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@aad997d40e358eeef7ec943f761498341c37c724
 
   # Code quality
-  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
+  - component: gitlab.com/devnw/ci-catalog/zig-format@aad997d40e358eeef7ec943f761498341c37c724
+    inputs:
+      zig_version: "0.16.0"
 
   # SBOM
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@aad997d40e358eeef7ec943f761498341c37c724
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@aad997d40e358eeef7ec943f761498341c37c724
 
   # Release
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.27.0
+  # job_token: create the release with CI_JOB_TOKEN. The default (glab)
+  # mode needs a GITLAB_TOKEN with api scope; the project's token lacks it,
+  # so create-release failed with 403 insufficient_scope on v0.1.45
+  # (pipeline 2960599429) and no tag since v0.1.11 got a GitLab release.
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@aad997d40e358eeef7ec943f761498341c37c724
+    inputs:
+      release_auth: job_token
+  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@aad997d40e358eeef7ec943f761498341c37c724
 
 stages:
   - lint
@@ -117,6 +122,11 @@ zig-format:
   rules: *component-verification-rules
   before_script:
     - *install-zig
+    - apt-get install -y --no-install-recommends git findutils
+  script:
+    # Own formatting for every tracked Zig file in one job, using the project compiler.
+    - git ls-files -z '*.zig' | xargs -0 -r zig fmt --check
+    - find src -name '*.zig' -print0 | xargs -0 -r -n1 zig ast-check
 
 # Opt both SBOM jobs in together to preserve the scan's artifact dependency.
 security-gitleaks:
@@ -131,6 +141,15 @@ sbom-scan:
 # E2E tests with multiple QUIC client implementations
 # Tests Python (aioquic), Go (quic-go), Rust (quinn), and Zig clients
 # Generate test certificates for E2E tests
+# GitLab only uploads artifacts from inside $CI_PROJECT_DIR, so the e2e jobs'
+# /tmp/{server,client}.log were never kept ("artifact path is not a subpath of
+# project directory"). Copy them into the project dir and print the tail of
+# the server log so a server crash is diagnosable from the job trace.
+.collect-e2e-logs: &collect-e2e-logs
+  - mkdir -p "$CI_PROJECT_DIR/e2e-logs"
+  - cp /tmp/server.log /tmp/client.log "$CI_PROJECT_DIR/e2e-logs/" 2>/dev/null || true
+  - echo "--- tail of server.log ---"; tail -n 100 "$CI_PROJECT_DIR/e2e-logs/server.log" 2>/dev/null || true
+
 .generate-test-certs: &generate-test-certs
   - bash scripts/generate_interop_certs.sh .interop-certs
   - cp .interop-certs/cert.pem server-cert.pem
@@ -147,8 +166,12 @@ build:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
+  # Each build mode retains its own artifacts. Parallel jobs must not
+  # overwrite each other's cache with disjoint compiler outputs.
+  cache: &quic-zig-cache
+    key:
+      prefix: "quic-zig-linux-x86_64-${ZIG_VERSION}-${CI_JOB_NAME_SLUG}-v1"
+      files: [build.zig.zon]
     paths:
       - zig-cache/
       - .zig-cache/
@@ -179,61 +202,88 @@ test:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    # Build/test subprocess concurrency must fit a small container CPU quota;
-    # the 32-client regression and every workload deadline stay unchanged.
-    - zig build test -j2 --summary all
+    # Competing Debug compiler/test steps starve the 32-client handshake on
+    # two-vCPU runners. Serialize graph steps; the test still runs 32 clients
+    # with its unchanged handshake and echo deadlines.
+    - zig build test -j1 --summary all
 
-# FIPS-140-3 dual-mode gate. Builds the OpenSSL 3.x FIPS provider into
-# /usr/local/ssl (the same script the `fips` package ships), then runs the
-# QUIC test suite with -Dfips=true so the AES-GCM-forced / ChaCha-rejected
-# crypto path is exercised under the linked FIPS provider.
-#
-# The explicit provisioning step uses the manifest's hash-pinned dependency,
-# verifies the OpenSSL release signature, and fails if setup/provider checks fail.
+# Build the hash-pinned dependency's provider once and share the verified artifact.
+# The explicit provisioning graph propagates setup failures and requires signatures.
+fips-deps:
+  stage: build
+  image: debian:bookworm-slim
+  variables:
+    # Keep the explicit 3.x pin; releases/latest may name the 4.x series.
+    OPENSSL_VERSION: "3.6.5"
+  tags: [company, linux, x86]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  # Reuse the installation only while the dependency pin and provisioning
+  # graph match. The installer verifies the version and active provider.
+  cache:
+    key:
+      prefix: "quic-openssl-fips-3.6.5-bookworm-x86_64-v1"
+      files: [build.zig.zon, build.zig]
+    paths:
+      - .openssl-fips/
+    policy: pull-push
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends build-essential perl wget curl sudo gnupg dirmngr ca-certificates make git
+    - *install-zig
+    - python3 scripts/test_fips_provision.py
+    # Import the upstream bundle; the pinned installer still checks the signer
+    # against its pinned fingerprints before accepting any release.
+    - wget -q https://www.openssl-library.org/source/pubkeys.asc -O /tmp/openssl-pubkeys.asc
+    - gpg --batch --import /tmp/openssl-pubkeys.asc
+  script:
+    - |
+      # Restored installations may have been built at another runner path.
+      FIPS_PREFIX="$CI_PROJECT_DIR/.openssl-fips"
+      if [ -x "$FIPS_PREFIX/bin/openssl" ]; then
+        sed -i "s#^\.include .*/ssl/fipsmodule\.cnf\$#.include ${FIPS_PREFIX}/ssl/fipsmodule.cnf#" "$FIPS_PREFIX/ssl/openssl.cnf"
+        FIPS_LIBDIR="$FIPS_PREFIX/lib64"
+        [ -d "$FIPS_LIBDIR/ossl-modules" ] || FIPS_LIBDIR="$FIPS_PREFIX/lib"
+        export OPENSSL_MODULES="$FIPS_LIBDIR/ossl-modules" LD_LIBRARY_PATH="$FIPS_LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      fi
+    - zig build provision-fips -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
+  artifacts:
+    paths:
+      - .openssl-fips/
+    expire_in: 1 day
+
 test-fips:
   stage: test
   image: debian:bookworm-slim
-  variables:
-    # Explicit 3.x pin: GitHub's latest release may be 4.x. The installer must
-    # not fall back to the runner's older system library, which lacks PQC.
-    OPENSSL_VERSION: "3.6.5"
-  tags:
-    - company
-    - linux
-    - x86
+  tags: [company, linux, x86]
   needs:
-    - job: build
+    - job: fips-deps
       artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential perl wget ca-certificates git sudo gnupg dirmngr python3
     - *install-zig
-    - python3 scripts/test_fips_provision.py
-    # OpenSSL identifies this bundle as authoritative when key servers differ:
-    # https://www.openssl-library.org/source/#downloads
-    # The pinned installer still checks signatures against pinned fingerprints.
-    - wget -q https://www.openssl-library.org/source/pubkeys.asc -O /tmp/openssl-pubkeys.asc
-    - gpg --batch --import /tmp/openssl-pubkeys.asc
-    - zig build provision-fips -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+    # Relocate the shared provider artifact to this job's checkout path.
+    - FIPS_PREFIX="$CI_PROJECT_DIR/.openssl-fips"
+    - sed -i "s#^\.include .*/ssl/fipsmodule\.cnf\$#.include ${FIPS_PREFIX}/ssl/fipsmodule.cnf#" "$FIPS_PREFIX/ssl/openssl.cnf"
+    - grep -q "^\.include ${FIPS_PREFIX}/ssl/fipsmodule\.cnf\$" "$FIPS_PREFIX/ssl/openssl.cnf"
+    - FIPS_LIBDIR="$FIPS_PREFIX/lib64"; [ -d "$FIPS_LIBDIR/ossl-modules" ] || FIPS_LIBDIR="$FIPS_PREFIX/lib"
+    - export OPENSSL_MODULES="$FIPS_LIBDIR/ossl-modules" LD_LIBRARY_PATH="$FIPS_LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # Match the CLI to the artifact's libraries during certificate generation.
+    - export PATH="$FIPS_PREFIX/bin:$PATH"
+    - OPENSSL_PREFIX="$FIPS_PREFIX" bash scripts/verify-fips-provider.sh
   script:
-    - OPENSSL_CONF=/usr/local/ssl/ssl/openssl.cnf zig build test -j2 -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+    - OPENSSL_CONF="$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf" zig build test -j2 -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
 
 test-release-safe:
   stage: test
@@ -249,11 +299,7 @@ test-release-safe:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -274,11 +320,7 @@ test-release-fast:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -302,11 +344,7 @@ test-release-small:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -315,7 +353,7 @@ test-release-small:
 
 e2e-test-python:
   stage: e2e
-  image: python:3.12-slim
+  image: python:3.15-slim
   tags:
     - company
     - linux
@@ -351,7 +389,7 @@ e2e-test-python:
 
 e2e-test-go:
   stage: e2e
-  image: golang:1.26.9
+  image: golang:1.27.3
   tags:
     - company
     - linux
@@ -400,7 +438,7 @@ client-trust-go:
   needs: []
   before_script: []
   script:
-    - cd test-clients/quic-go-client && go test -race -count=1 -timeout=2m .
+    - cd test-clients/quic-go-client && go test -vet=off -race -count=1 -timeout=2m .
   artifacts: null
   allow_failure: false
 
@@ -477,9 +515,9 @@ e2e-test-zig:
 # Uses GitLab shared runners which support Docker-in-Docker
 interop-test:
   stage: test
-  image: docker:27
+  image: docker:29
   services:
-    - docker:27-dind
+    - docker:29-dind
   tags:
     - company
     - linux
@@ -501,8 +539,8 @@ interop-test:
   before_script:
     - apk add --no-cache bash git curl
     - mkdir -p "$HOME/.docker/cli-plugins"
-    - DOCKER_COMPOSE_VERSION="v2.32.4"
-    - DOCKER_COMPOSE_SHA256="ed1917fb54db184192ea9d0717bcd59e3662ea79db48bff36d3475516c480a6b"
+    - DOCKER_COMPOSE_VERSION="v5.5.1"
+    - DOCKER_COMPOSE_SHA256="db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576"
     - curl -fsSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" -o "$HOME/.docker/cli-plugins/docker-compose"
     - echo "${DOCKER_COMPOSE_SHA256}  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
     - chmod +x "$HOME/.docker/cli-plugins/docker-compose"
@@ -601,19 +639,36 @@ quality-zig-gates:
   stage: test
   image: debian:bookworm-slim
   variables:
+    # Full history so the paired-commit perf gate can check out the
+    # comparison commit (MR diff base / previous main commit).
     GIT_DEPTH: "0"
+    # 5 paired baseline/HEAD rounds in alternating order (see
+    # scripts/perf-gate.sh). A row fails only if its regression reproduces:
+    # every HEAD round is worse than every baseline round and the median
+    # change exceeds the threshold, and micro rows must also move by more
+    # than the absolute floors (p95 3 ns, per-op 1 ns)
+    # (benchmarks/compare.zig, docs/PERFORMANCE_TARGETS.md#noise-tolerance).
+    # Failing on any single round tripped on noise on nearly every run since
+    # June (e.g. 2936039032, 2936132303, 2937011195, 2938467287), each
+    # time on different rows.
+    # 5, not 3: the micro suite tests ~70 row/metric pairs per run, and with
+    # 3 rounds per side each has a 1/20 chance of non-overlapping ranges on
+    # identical code. After the floors and thresholds that still left a
+    # false FAIL in about half the runs (main schedule 2948905825:
+    # frame_serialization/ack and reset_stream on unchanged bench sources;
+    # MRs !76 and !80 on connection_lookup/1000 and aead/chacha20). With 5
+    # rounds the chance is 1/252 per pair (about 0.3 per run before the
+    # thresholds apply), for roughly 6 extra minutes.
+    PERF_GATE_ROUNDS: "5"
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git libssl-dev
     # The checkout may belong to the runner helper UID. Trust only this exact
@@ -621,7 +676,6 @@ quality-zig-gates:
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
     - *install-zig
   script:
-    - git ls-files '*.zig' | xargs -r zig fmt --check
     - zig build examples
     # Capture the actual baseline and candidate sequentially on this runner.
     # compare.zig retains environment checks, relative thresholds and absolute
@@ -631,6 +685,8 @@ quality-zig-gates:
     # scripts/perf_udp_batch_gate.sh is absorbed as a post-compare jq
     # check in perf-gate.sh itself.
     - apt-get install -y --no-install-recommends jq
+    # Keep comparator regression checks before the paired performance gate.
+    - zig build test-bench-compare
     # Micro remains the CI scope; integration/all retain their dedicated jobs.
     - python3 scripts/test_ci_perf_gate.py
     - bash scripts/ci-perf-gate.sh
@@ -657,6 +713,7 @@ stress-integration-20x:
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -665,11 +722,7 @@ stress-integration-20x:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
       allow_failure: true
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git libssl-dev jq
     - *install-zig
@@ -706,12 +759,24 @@ stress-integration-20x:
       - stress-results/
     expire_in: 30 days
 
-runtime-smoke-macos-saas:
+runtime-smoke-macos:
   stage: test
-  image: macos-15-xcode-16
+  # Installs its own toolchain and uses no Linux build/FIPS artifacts.
+  # Runs on the devnw dedicated Apple Silicon runners (shell executor, so
+  # there is no image to pick; Xcode and python3 come from the host).
+  needs: []
+  timeout: 15m
   tags:
-    - saas-macos-medium-m1
+    - dedicated
+    - macos
+    - arm
   rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/quic/**/*
+        - src/fips_backend/std_shim.zig
+        - tests/test_portable_runtime.zig
+        - scripts/native_runtime_smoke.sh
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_TAG
@@ -773,14 +838,11 @@ fuzz:
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  cache:
-    key: "zig-cache-${ZIG_VERSION}"
-    paths:
-      - zig-cache/
-      - .zig-cache/
+  cache: *quic-zig-cache
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -799,21 +861,31 @@ security-rust-cargo-audit:
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "quic-cargo-audit-0.22.2-rust1.99-linux-x86_64-v1"
+    paths:
+      - .cache/cargo-audit/
   script:
+    - export PATH="$CI_PROJECT_DIR/.cache/cargo-audit/bin:$PATH"
     - |
-      for attempt in 1 2 3; do
-        cargo install cargo-audit --locked --version 0.22.0 && break
-        if [ "$attempt" -eq 3 ]; then
-          echo "cargo-audit install failed after retries" >&2
-          exit 1
-        fi
-        echo "Retrying cargo-audit install (${attempt}/3)..." >&2
-        sleep 5
-      done
+      audit_bin="$CI_PROJECT_DIR/.cache/cargo-audit/bin/cargo-audit"
+      if [ "$("$audit_bin" --version 2>/dev/null || true)" != "cargo-audit 0.22.2" ]; then
+        for attempt in 1 2 3; do
+          cargo install --root "$CI_PROJECT_DIR/.cache/cargo-audit" cargo-audit --locked --version 0.22.2 --force && break
+          if [ "$attempt" -eq 3 ]; then
+            echo "cargo-audit install failed after retries" >&2
+            exit 1
+          fi
+          echo "Retrying cargo-audit install (${attempt}/3)..." >&2
+          sleep 5
+        done
+      fi
+      test "$("$audit_bin" --version)" = "cargo-audit 0.22.2"
     - sh scripts/check-client-security.sh rust
 
 security-repo-hygiene:
@@ -822,6 +894,7 @@ security-repo-hygiene:
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -833,17 +906,18 @@ security-repo-hygiene:
 
 security-python-safety:
   stage: security
-  image: python:3.13-slim
+  image: python:3.15-slim
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   before_script:
     - python -m pip install --upgrade pip
-    - python -m pip install 'safety==3.7.0'
+    - python -m pip install 'safety==3.8.1'
   script:
     - safety check --full-report -r clients/python/requirements.txt
     - safety check --full-report -r test-clients/aioquic-client/requirements.txt
@@ -851,16 +925,17 @@ security-python-safety:
 
 security-go-govulncheck:
   stage: security
-  image: golang:1.26.9
+  image: golang:1.27.3
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   variables:
-    GOTOOLCHAIN: "go1.26.9"
+    GOTOOLCHAIN: "go1.27.3"
   script:
     - go version
     - sh scripts/check-client-security.sh go
@@ -868,7 +943,7 @@ security-go-govulncheck:
 # Scheduled job to update Go dependencies for interop testing
 update-go-dependencies:
   stage: maintenance
-  image: golang:1.26.9
+  image: golang:1.27.3
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $UPDATE_GO_DEPS == "true"
   before_script:
@@ -910,3 +985,35 @@ update-go-dependencies:
 
       echo "Created merge request for dependency updates"
   allow_failure: true
+
+# Synthetic measurements verify gate decisions; this is not a performance run.
+test-perf-rounds:
+  stage: test
+  image: python:3.15-slim
+  tags: [company, linux, x86]
+  needs: []
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git jq
+  script:
+    - python3 scripts/test_perf_rounds.py
+    - python3 scripts/test_hook_env.py
+  allow_failure: false
+
+workflow:
+  auto_cancel:
+    on_job_failure: all
+    on_new_commit: interruptible
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      auto_cancel:
+        on_new_commit: none
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      auto_cancel:
+        on_job_failure: all
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      when: never
+    # New commits supersede branch validation; required failures stop every source.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      auto_cancel:
+        on_job_failure: all
+    - when: always

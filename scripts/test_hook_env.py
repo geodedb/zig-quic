@@ -4,7 +4,6 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
@@ -13,7 +12,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "scripts/hook-env.sh"
@@ -21,7 +20,7 @@ WRAPPER = ROOT / "scripts/hook-env.sh"
 
 class HookEnvironmentTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="quic-hook-env-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="zig-hook-env-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.clean_env = {
@@ -88,7 +87,7 @@ class HookEnvironmentTests(unittest.TestCase):
         # The raw mode is used only to demonstrate RED in disposable fixtures.
         prefix = (
             []
-            if os.environ.get("QUIC_HOOK_ENV_RED_CONTROL") == "1"
+            if os.environ.get("HOOK_ENV_RED_CONTROL") == "1"
             else ["bash", str(WRAPPER)]
         )
         return subprocess.run(

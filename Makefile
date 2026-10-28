@@ -224,6 +224,20 @@ wasm32-wasi-release:
 	@echo "Building for wasm32-wasi (release)..."
 	@$(ZIG) build -Dtarget=wasm32-wasi $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
+.PHONY: deps test-fips
+# Build + install the latest OpenSSL 3.x with the FIPS provider into
+# $(OPENSSL_PREFIX) (default /usr/local/ssl). Required before test-fips /
+# the CI test-fips job. Idempotent; re-runs upgrade in place.
+# scripts/install-openssl-fips.sh and scripts/verify-fips-provider.sh are
+# byte-identical copies of devnw/zig/fips' scripts (same as fts-storage).
+deps:
+	OPENSSL_PREFIX=$(or $(OPENSSL_PREFIX),/usr/local/ssl) ./scripts/install-openssl-fips.sh
+
+# FIPS-140-3 dual-mode test (-Dfips=true). Requires the OpenSSL FIPS
+# provider at $(or $(OPENSSL_PREFIX),/usr/local/ssl) (run `make deps` first).
+test-fips:
+	OPENSSL_CONF=$(or $(OPENSSL_PREFIX),/usr/local/ssl)/ssl/openssl.cnf $(ZIG) build test -Dfips=true -Dopenssl_path=$(or $(OPENSSL_PREFIX),/usr/local/ssl) --summary all
+
 # Clean build artifacts
 clean:
 	rm -rf zig-cache zig-out .zig-cache

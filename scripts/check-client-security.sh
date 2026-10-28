@@ -24,13 +24,13 @@ rust_scan() (
 )
 
 go_scan() (
-    cd "$root/$1" && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+    cd "$root/$1" && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 )
 
 go_binary_scan() (
     cd "$root/test-clients/quic-test-legacy" &&
         go build -o "$temporary/$1" "./$1" &&
-        go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -mode=binary "$temporary/$1"
+        go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -mode=binary "$temporary/$1"
 )
 
 case ${1-} in

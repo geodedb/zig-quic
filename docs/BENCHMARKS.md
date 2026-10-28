@@ -155,7 +155,11 @@ reproducible baselines:
 - **Thermals:** watch `cpupower frequency-info` or `sensors` between
   captures if the run exceeds a couple of minutes.
 
-The 3x stddev noise floor absorbs moderate variance, but systematic
+The 3x stddev noise floor, the micro absolute floors (p95 3 ns, per-op
+1 ns) and (with
+`PERF_GATE_ROUNDS>1`) the reproduction-across-rounds rule absorb
+moderate variance (see `docs/PERFORMANCE_TARGETS.md#noise-tolerance`),
+but systematic
 frequency scaling and thermal throttling can produce silent regression
 drift. When in doubt, capture baseline and current within the same
 five-minute window on the same hardware.
@@ -230,7 +234,10 @@ five-minute window on the same hardware.
 
 2. **Register it.** Add the module import + a `SuiteEntry` row to the
    `registry` in `benchmarks/bench_runner.zig`. Verify with
-   `zig build bench -- --list` that your scenario appears.
+   `zig build bench -- --list` that your scenario appears. For a micro
+   suite, also add its file name to `isolated_micro_suites` in `build.zig`
+   (same position as in the registry), so `zig build bench-isolated` and
+   the paired perf gate build it as its own executable.
 
 3. **If the scenario carries an absolute gate,** add a row to the
    `absolute_gates` table in `benchmarks/compare.zig` **and** a row
