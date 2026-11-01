@@ -2,7 +2,7 @@ module xnet-quic-test
 
 go 1.27.3
 
-require golang.org/x/net v0.61.0
+require golang.org/x/net v0.62.0
 
 require (
 	golang.org/x/crypto v0.58.0 // indirect
