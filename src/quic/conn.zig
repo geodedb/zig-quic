@@ -847,6 +847,17 @@ pub const Connection = struct {
     // STREAM frames tracked by packet number for loss-triggered retransmission.
     app_stream_retx: std.AutoHashMap(u64, StreamTxPacket) = undefined,
     app_stream_retx_init: bool = false,
+    /// Packet numbers of `app_stream_retx` entries in ascending order,
+    /// starting at `app_stream_retx_head` (SONNY-6434). Every tracked packet
+    /// number appears exactly once; numbers whose entry has since been
+    /// removed may linger until pruned. Lets ACK processing walk only the
+    /// entries an ACK can affect instead of the whole map.
+    app_stream_retx_order: std.ArrayList(u64) = .empty,
+    app_stream_retx_head: usize = 0,
+    /// Diagnostic counter (SONNY-6434): cumulative STREAM retransmission
+    /// tracking entries examined while processing app-space ACK frames.
+    /// Lets tests bound the per-ACK work of the retransmission path.
+    ack_retx_entries_visited: u64 = 0,
     // Queue of incoming peer-initiated streams waiting to be accepted
     incoming_stream_queue: std.ArrayList(u64) = .empty,
     // CANARY: REQ=REQ-QUIC-HC-037; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionRxWake; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
@@ -1313,6 +1324,9 @@ pub const Connection = struct {
         self.stream_txs_init = true;
         self.app_stream_retx = std.AutoHashMap(u64, StreamTxPacket).init(alloc.*);
         self.app_stream_retx_init = true;
+        self.app_stream_retx_order = .empty;
+        self.app_stream_retx_head = 0;
+        self.ack_retx_entries_visited = 0;
         self.stream_send_state = .Ready;
         self.stream_recv_state = .Recv;
         self.stream_send_aborted = false;
@@ -1642,6 +1656,7 @@ pub const Connection = struct {
                 self.allocator.free(entry.value_ptr.data);
             }
             self.app_stream_retx.deinit();
+            self.app_stream_retx_order.deinit(self.allocator.*);
         }
         // Free incoming stream queue
         if (self.incoming_stream_queue.capacity != 0) self.incoming_stream_queue.deinit(self.allocator.*);

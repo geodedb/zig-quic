@@ -55,12 +55,13 @@ fn elapsedSince(now_ns: u64, then_ns: u64) u64 {
     return if (now_ns >= then_ns) now_ns - then_ns else 0;
 }
 
-/// Hard cap on sent_packets entries per space. If exceeded after compaction,
-/// the oldest (lowest-index) entries are dropped to stay within budget.
-///
-/// Ring buffer migration is a future optimization; the current bounded
-/// ArrayList with compaction is functionally correct.
+/// Hard cap on sent_packets entries per space. Past it the oldest entries
+/// are dropped (see SpaceState.enforceCapacity).
 const max_sent_packets: usize = 4096;
+/// Capacity enforcement drops down to this many entries, so the O(n) shift
+/// runs once per (max - low water) recorded packets instead of on every
+/// packet once the cap is reached (SONNY-6434).
+const sent_packets_low_water: usize = max_sent_packets - max_sent_packets / 8;
 // CANARY: REQ=REQ-QUIC-HC-095; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckRecoveryParallelThreshold; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
 // ACK processing runs on the endpoint receive path. Fork/join parallel loss
 // detection at 64 packets made normal high-fanout short-header ACK bursts pay
@@ -71,72 +72,126 @@ const loss_detect_parallel_threshold: usize = 1024;
 
 // Internal space state tracking
 const SpaceState = struct {
+    /// Tracked packets sorted by ascending packet number; duplicates keep
+    /// insertion order. Lookups are binary searches (SONNY-6434: the former
+    /// pn -> slot hash index was rebuilt in full by every compaction, i.e.
+    /// on every ACK and, at the cap, on every recorded packet).
     sent: std.ArrayList(SentPacket),
-    sent_index: std.AutoHashMap(u64, usize),
     allocator: std.mem.Allocator,
     largest_acked: ?u64 = null,
     loss_time_ns: ?u64 = null,
     // Last observed ECN counters from peer's ACK_ECN for this space
     ecn_last: frame.EcnCounts = .{ .ect0 = 0, .ect1 = 0, .ce = 0 },
     ecn_seen_any: bool = false,
+    /// True while every packet was recorded with a larger packet number and
+    /// a send time no earlier than the one before it, as a connection
+    /// records them. Packet-threshold losses (pn far enough below the
+    /// largest acked) and time-threshold losses (sent long enough ago) are
+    /// then both prefixes of `sent`, so loss detection walks only the lost
+    /// prefix. Cleared for good by any out-of-order record, after which the
+    /// full scans run.
+    in_send_order: bool = true,
+    /// Diagnostic counter (SONNY-6434): sent-packet entries examined one by
+    /// one by ACK marking, loss detection, compaction and capacity
+    /// enforcement. Bulk moves are not counted.
+    entries_visited: u64 = 0,
 
     fn init(alloc: std.mem.Allocator) SpaceState {
         return .{
             .sent = std.ArrayList(SentPacket).empty,
-            .sent_index = std.AutoHashMap(u64, usize).init(alloc),
             .allocator = alloc,
         };
     }
     fn deinit(self: *SpaceState) void {
-        self.sent_index.deinit();
         self.sent.deinit(self.allocator);
     }
 
-    /// Remove acked/declared_lost entries from sent and rebuild sent_index.
-    fn compact(self: *SpaceState) void {
-        var write_idx: usize = 0;
-        for (self.sent.items) |sp| {
-            if (!sp.acked and !sp.declared_lost) {
-                self.sent.items[write_idx] = sp;
-                write_idx += 1;
-            }
+    /// Index of the first entry whose packet number is >= `pn`.
+    fn lowerBound(self: *const SpaceState, pn: u64) usize {
+        const items = self.sent.items;
+        var lo: usize = 0;
+        var hi: usize = items.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (items[mid].pn < pn) lo = mid + 1 else hi = mid;
         }
-        self.sent.items.len = write_idx;
-        // Rebuild sent_index after compaction
-        self.sent_index.clearRetainingCapacity();
-        for (self.sent.items, 0..) |sp, i| {
-            self.sent_index.put(sp.pn, i) catch |err| {
-                logger.err("sent_index rebuild put failed (OOM): {s}", .{@errorName(err)});
-            };
+        return lo;
+    }
+
+    /// Index of the first entry whose packet number is > `pn`.
+    fn upperBound(self: *const SpaceState, pn: u64) usize {
+        const items = self.sent.items;
+        var lo: usize = 0;
+        var hi: usize = items.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (items[mid].pn <= pn) lo = mid + 1 else hi = mid;
+        }
+        return lo;
+    }
+
+    /// Slot of the most recently recorded entry for `pn`, if tracked.
+    fn find(self: *const SpaceState, pn: u64) ?usize {
+        const i = self.upperBound(pn);
+        if (i == 0 or self.sent.items[i - 1].pn != pn) return null;
+        return i - 1;
+    }
+
+    /// Record `sp`, keeping `sent` sorted. A connection records packet
+    /// numbers in increasing order, so this is an append.
+    fn record(self: *SpaceState, sp: SentPacket) !void {
+        const items = self.sent.items;
+        if (!sp.ack_eliciting) self.in_send_order = false;
+        if (items.len == 0 or sp.pn > items[items.len - 1].pn) {
+            if (items.len > 0 and sp.time_ns < items[items.len - 1].time_ns) self.in_send_order = false;
+            try self.sent.append(self.allocator, sp);
+        } else {
+            self.in_send_order = false;
+            try self.sent.insert(self.allocator, self.upperBound(sp.pn), sp);
         }
     }
 
-    /// Enforce hard capacity cap by dropping oldest entries when over limit.
+    /// Remove acked/declared_lost entries from `sent`.
+    fn compact(self: *SpaceState) void {
+        self.compactHead(self.sent.items.len);
+    }
+
+    /// Remove acked/declared_lost entries among the first `head_len`
+    /// entries, the only ones an ACK or loss pass touched, and shift the
+    /// rest down in one move.
+    fn compactHead(self: *SpaceState, head_len: usize) void {
+        const items = self.sent.items;
+        var write_idx: usize = 0;
+        for (items[0..head_len]) |sp| {
+            self.entries_visited +%= 1;
+            if (!sp.acked and !sp.declared_lost) {
+                items[write_idx] = sp;
+                write_idx += 1;
+            }
+        }
+        if (write_idx == head_len) return;
+        const tail_len = items.len - head_len;
+        @memmove(items[write_idx..][0..tail_len], items[head_len..]);
+        self.sent.items.len = write_idx + tail_len;
+    }
+
+    /// Enforce the hard capacity cap by dropping the oldest entries, down to
+    /// `sent_packets_low_water` so the shift is amortized. A dropped packet
+    /// leaves bytes_in_flight and is no longer tracked here; its stream data
+    /// is not lost: the connection keeps every STREAM frame until an ACK
+    /// range covers it or retransmits it once a later packet is acknowledged
+    /// (or on PTO), independently of this tracking.
     fn enforceCapacity(self: *SpaceState, cc: *CcState) void {
         if (self.sent.items.len <= max_sent_packets) return;
-        const excess = self.sent.items.len - max_sent_packets;
-        // Remove index entries for dropped packets and adjust bytes_in_flight
+        const excess = self.sent.items.len - sent_packets_low_water;
         for (self.sent.items[0..excess]) |sp| {
-            _ = self.sent_index.remove(sp.pn);
-            // Subtract orphaned packet bytes from congestion accounting
+            self.entries_visited +%= 1;
             if (sp.ack_eliciting) {
                 if (cc.bytes_in_flight >= sp.size) cc.bytes_in_flight -= sp.size else cc.bytes_in_flight = 0;
             }
         }
-        // Shift remaining entries forward
-        std.mem.copyForwards(
-            SentPacket,
-            self.sent.items[0..max_sent_packets],
-            self.sent.items[excess..],
-        );
-        self.sent.items.len = max_sent_packets;
-        // Rebuild index with corrected positions
-        self.sent_index.clearRetainingCapacity();
-        for (self.sent.items, 0..) |sp, i| {
-            self.sent_index.put(sp.pn, i) catch |err| {
-                logger.err("sent_index rebuild put failed (OOM): {s}", .{@errorName(err)});
-            };
-        }
+        @memmove(self.sent.items[0..sent_packets_low_water], self.sent.items[excess..]);
+        self.sent.items.len = sent_packets_low_water;
     }
 };
 
@@ -180,6 +235,9 @@ pub const Recovery = struct {
     /// RFC 9002 S7.3.2: start of the current congestion recovery period (sent_time of trigger).
     /// cwnd is only reduced once per recovery period.
     congestion_recovery_start_time: ?u64 = null,
+    /// Diagnostic counter (SONNY-6434): cumulative sent-packet entries
+    /// examined by getPacketDeliveryState(). Guarded by `mutex`.
+    delivery_lookup_entries_visited: u64 = 0,
 
     // Lock-free reader mirrors (#160). Updated with .release ordering at the
     // tail of every mutating method while the mutex is still held.
@@ -273,20 +331,16 @@ pub const Recovery = struct {
         // declared_lost. Appending them to `sent` made the list grow ~1 entry
         // per request on a long-lived connection (they only ever leave via the
         // 4096 hard cap), and every received ACK re-scans `sent` (unprocessed
-        // count, loss detection, and the `sent_index` rebuild in compact()),
-        // yielding O(n) per-ACK and O(n^2) cumulative cost. Tracking only
-        // ack-eliciting packets keeps `sent` bounded by the in-flight window.
+        // count, loss detection, and compaction), yielding O(n) per-ACK and
+        // O(n^2) cumulative cost. Tracking only ack-eliciting packets keeps
+        // `sent` bounded by the in-flight window.
         if (ack_eliciting) {
-            const alloc = self.spaces[idx].allocator;
-            try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
-            const sent_slot = self.spaces[idx].sent.items.len - 1;
-            try self.spaces[idx].sent_index.put(pn, sent_slot);
-
-            // Enforce hard capacity cap: compact first, then drop oldest if still over.
-            if (self.spaces[idx].sent.items.len > max_sent_packets) {
-                self.spaces[idx].compact();
-                self.spaces[idx].enforceCapacity(&self.cc);
-            }
+            try self.spaces[idx].record(.{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
+            // Hard capacity cap. ACK and loss processing compact acked and
+            // lost entries away before returning, so every entry here is
+            // still in flight: drop the oldest (amortized, see
+            // enforceCapacity) without rescanning.
+            self.spaces[idx].enforceCapacity(&self.cc);
         }
 
         const old_inflight = self.cc.bytes_in_flight;
@@ -315,50 +369,95 @@ pub const Recovery = struct {
     /// Result of ACK/loss processing with aggregate counters.
     pub const AckResult = struct { bytes_acked: usize = 0, bytes_lost: usize = 0 };
 
+    /// Inclusive packet-number interval acknowledged by one ACK range
+    /// (RFC 9000 §19.3.1).
+    pub const AckedRange = struct { lo: u64, hi: u64 };
+
+    /// Packets newly acknowledged by one ACK frame, accumulated while marking.
+    const AckMark = struct {
+        bytes_acked: usize = 0,
+        ack_eliciting_acked: bool = false,
+        largest_pn: u64,
+        largest_acked_pkt_time: ?u64 = null,
+
+        fn add(self: *AckMark, sp: *SentPacket) void {
+            if (sp.acked or sp.declared_lost) return;
+            sp.acked = true;
+            self.bytes_acked = addSaturatingUsize(self.bytes_acked, sp.size);
+            if (sp.ack_eliciting) self.ack_eliciting_acked = true;
+            if (sp.pn > self.largest_pn) {
+                self.largest_pn = sp.pn;
+                self.largest_acked_pkt_time = sp.time_ns;
+            }
+        }
+    };
+
+    /// Mark the tracked packet `pn` acknowledged (binary search).
+    fn markAckedPn(sstate: *SpaceState, pn: u64, mark: *AckMark) void {
+        const sent_slot = sstate.find(pn) orelse return;
+        sstate.entries_visited +%= 1;
+        mark.add(&sstate.sent.items[sent_slot]);
+    }
+
     /// Handle ACK frames (no ECN) for a given space, update RTT/loss/cc, and return summary.
     pub fn onAckReceived(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64) AckResult {
         return self.onAckReceivedWithEcn(space, acked, ack_delay_ns, now_ns, null);
     }
 
     /// Handle ACK frames for a given space with optional ECN counters.
+    /// `acked` enumerates acknowledged packet numbers; prefer
+    /// onAckRangesReceivedWithEcn(), which takes the ACK frame's ranges and
+    /// so is not bounded by how many packet numbers a caller enumerates.
     pub fn onAckReceivedWithEcn(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
-        const idx = spaceIdx(space);
-        var sstate = &self.spaces[idx];
-        var bytes_acked: usize = 0;
-        var ack_eliciting_acked = false;
-        var largest_pn: u64 = sstate.largest_acked orelse 0;
-        var largest_acked_pkt_time: ?u64 = null;
+        const sstate = &self.spaces[spaceIdx(space)];
+        var mark: AckMark = .{ .largest_pn = sstate.largest_acked orelse 0 };
+        for (acked) |pn| markAckedPn(sstate, pn, &mark);
+        return self.finishAckLocked(space, &mark, ack_delay_ns, now_ns, ecn);
+    }
+
+    /// Handle an ACK frame given as inclusive packet-number ranges, sorted
+    /// by descending packet number (ACK frame order, RFC 9000 §19.3.1).
+    /// Every tracked packet in any range is acknowledged, however many
+    /// packet numbers the ranges span: each range is located by binary
+    /// search and only the tracked packets inside it are visited, so
+    /// marking costs O(ranges * log tracked + newly acknowledged).
+    pub fn onAckRangesReceivedWithEcn(self: *Recovery, space: PacketNumberSpace, ranges: []const AckedRange, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
+        const sstate = &self.spaces[spaceIdx(space)];
+        var mark: AckMark = .{ .largest_pn = sstate.largest_acked orelse 0 };
+        for (ranges) |r| {
+            if (r.hi < r.lo) continue;
+            var i = sstate.lowerBound(r.lo);
+            while (i < sstate.sent.items.len and sstate.sent.items[i].pn <= r.hi) : (i += 1) {
+                sstate.entries_visited +%= 1;
+                mark.add(&sstate.sent.items[i]);
+            }
+        }
+        return self.finishAckLocked(space, &mark, ack_delay_ns, now_ns, ecn);
+    }
+
+    /// RTT update, loss detection and congestion control for one ACK frame
+    /// whose newly acknowledged packets are summarized in `mark`. Caller
+    /// holds `mutex`.
+    fn finishAckLocked(self: *Recovery, space: PacketNumberSpace, mark: *const AckMark, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
+        var sstate = &self.spaces[spaceIdx(space)];
+        const bytes_acked = mark.bytes_acked;
+        const ack_eliciting_acked = mark.ack_eliciting_acked;
+        const largest_pn = mark.largest_pn;
+        const largest_acked_pkt_time = mark.largest_acked_pkt_time;
 
         // PHASE 42 PART 22: Log ACK reception
-        logger.debugPrint("[P42-22-ACK-RX] 📥 space={s} acked_count={d} prev_largest={d}\n", .{
+        logger.debugPrint("[P42-22-ACK-RX] 📥 space={s} acked_bytes={d} prev_largest={d}\n", .{
             @tagName(space),
-            acked.len,
+            bytes_acked,
             sstate.largest_acked orelse 0,
         });
 
-        // Mark acked packets using direct PN index lookups instead of nested scans.
-        for (acked) |pn| {
-            if (sstate.sent_index.get(pn)) |sent_slot| {
-                if (sent_slot >= sstate.sent.items.len) {
-                    _ = sstate.sent_index.remove(pn);
-                    continue;
-                }
-                const sp = &sstate.sent.items[sent_slot];
-                if (!sp.acked and !sp.declared_lost) {
-                    sp.acked = true;
-                    bytes_acked = addSaturatingUsize(bytes_acked, sp.size);
-                    if (sp.ack_eliciting) ack_eliciting_acked = true;
-                    if (pn > largest_pn) {
-                        largest_pn = pn;
-                        largest_acked_pkt_time = sp.time_ns;
-                    }
-                }
-                _ = sstate.sent_index.remove(pn);
-            }
-        }
         if (largest_acked_pkt_time) |t_ack| {
             const measured = if (now_ns > t_ack) now_ns - t_ack else 0;
             const old_smoothed = self.rtt.smoothed_rtt_ns;
@@ -380,7 +479,7 @@ pub const Recovery = struct {
         //
         // For very large unprocessed sent-packet windows, use thread-pool fork/join to mark packets as
         // lost in parallel (parallel.parallelLossDetect). Then a sequential cleanup
-        // pass handles sent_index removal and detailed per-loss statistics/logging.
+        // pass handles detailed per-loss statistics/logging.
         // Below threshold, the original merged single-pass is used.
         var bytes_lost: usize = 0;
         var first_lost_time: ?u64 = null;
@@ -391,16 +490,72 @@ pub const Recovery = struct {
         const have_rtt = self.rtt.have_sample;
         const tt_base: u64 = if (have_rtt) LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns) else 0;
 
+        // Entries compaction must examine; the full scans below may touch any.
+        var compact_len: usize = sstate.sent.items.len;
+
         // Count unprocessed packets to decide parallel vs sequential
         var unprocessed_count: usize = 0;
-        for (sstate.sent.items) |sp| {
+        if (sstate.in_send_order) {
+            // Packets recorded in send order (SONNY-6434): packet-threshold
+            // losses (RFC 9002 §6.1.1, pn order) and time-threshold losses
+            // (§6.1.2, send-time order) are both prefixes of `sent`, so the
+            // walk stops at the first in-flight packet that is neither. That
+            // packet's time-threshold deadline is the next loss time: the
+            // earliest over packets not declared lost (Appendix A.10). The
+            // packets declared lost equal those of the full scans below, at
+            // O(lost + acked below them) instead of O(tracked).
+            var i: usize = 0;
+            while (i < sstate.sent.items.len) : (i += 1) {
+                const sp = &sstate.sent.items[i];
+                sstate.entries_visited +%= 1;
+                if (sp.acked or sp.declared_lost) continue;
+                const pkt_lost = if (sstate.largest_acked) |la| self.loss.isPacketThresholdLost(la, sp.pn) else false;
+                var time_lost = false;
+                var deadline: ?u64 = null;
+                if (have_rtt and sp.ack_eliciting) {
+                    const d = deadlineAfter(sp.time_ns, tt_base);
+                    if (now_ns >= d) time_lost = true else deadline = d;
+                }
+                if (!pkt_lost and !time_lost) {
+                    earliest_loss_time = deadline;
+                    break;
+                }
+
+                sp.declared_lost = true;
+                bytes_lost = addSaturatingUsize(bytes_lost, sp.size);
+                if (pkt_lost) pkt_threshold_lost_count += 1;
+                if (time_lost) time_threshold_lost_count += 1;
+                if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
+                if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
+                if (pkt_lost) {
+                    logger.debugPrint("[P42-22-LOSS-PKT] space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
+                        @tagName(space),                                                                              sp.pn,                      sstate.largest_acked orelse 0,
+                        if ((sstate.largest_acked orelse 0) >= sp.pn) (sstate.largest_acked orelse 0) - sp.pn else 0, self.loss.packet_threshold, sp.size,
+                    });
+                }
+                if (time_lost) {
+                    const age_us = elapsedSince(now_ns, sp.time_ns) / 1000;
+                    logger.debugPrint("[P42-22-LOSS-TIME] space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
+                        @tagName(space), sp.pn, age_us, tt_base / 1000, sp.size,
+                    });
+                }
+            }
+            // Newly acknowledged packets all lie at or below the largest
+            // acknowledged; lost ones end at the walk's stop.
+            const acked_end = if (sstate.largest_acked) |la| sstate.upperBound(la) else 0;
+            compact_len = @max(i, acked_end);
+        } else for (sstate.sent.items) |sp| {
+            sstate.entries_visited +%= 1;
             if (!sp.acked and !sp.declared_lost) unprocessed_count += 1;
         }
 
-        if (unprocessed_count >= loss_detect_parallel_threshold and sstate.largest_acked != null) {
+        if (sstate.in_send_order) {
+            // Handled above.
+        } else if (unprocessed_count >= loss_detect_parallel_threshold and sstate.largest_acked != null) {
             // Parallel path: build SentPacketInfo array, run parallel scan, then cleanup
             var par_infos: [4096]parallel.SentPacketInfo = undefined;
             const count = @min(sstate.sent.items.len, par_infos.len);
+            sstate.entries_visited +%= 2 * @as(u64, count); // copy-out + parallel scan
             for (sstate.sent.items[0..count], 0..) |sp, i| {
                 par_infos[i] = .{
                     .packet_number = sp.pn,
@@ -423,6 +578,7 @@ pub const Recovery = struct {
 
             // Map parallel results back and do sequential cleanup (index removal, stats, logging)
             for (sstate.sent.items[0..count], 0..) |*sp, i| {
+                sstate.entries_visited +%= 1;
                 if (sp.acked or sp.declared_lost) continue;
                 if (!par_infos[i].declared_lost) {
                     // Not marked lost by parallel scan — check earliest_loss_time for timer
@@ -442,7 +598,6 @@ pub const Recovery = struct {
                 const time_lost = !pkt_lost; // if parallel marked it and not pkt_lost, must be time_lost
 
                 sp.declared_lost = true;
-                _ = sstate.sent_index.remove(sp.pn);
                 bytes_lost = addSaturatingUsize(bytes_lost, sp.size);
                 if (pkt_lost) pkt_threshold_lost_count += 1;
                 if (time_lost) time_threshold_lost_count += 1;
@@ -465,6 +620,7 @@ pub const Recovery = struct {
         } else {
             // Sequential path: original merged single-pass for small windows
             for (sstate.sent.items) |*sp| {
+                sstate.entries_visited +%= 1;
                 if (sp.acked or sp.declared_lost) continue;
 
                 const pkt_lost = if (sstate.largest_acked) |la| self.loss.isPacketThresholdLost(la, sp.pn) else false;
@@ -481,7 +637,6 @@ pub const Recovery = struct {
 
                 if (pkt_lost or time_lost) {
                     sp.declared_lost = true;
-                    _ = sstate.sent_index.remove(sp.pn);
                     bytes_lost = addSaturatingUsize(bytes_lost, sp.size);
                     if (pkt_lost) pkt_threshold_lost_count += 1;
                     if (time_lost) time_threshold_lost_count += 1;
@@ -516,7 +671,7 @@ pub const Recovery = struct {
         }
 
         // Compact: remove fully-processed entries (acked or declared_lost)
-        sstate.compact();
+        sstate.compactHead(compact_len);
 
         // Congestion control accounting
         if (bytes_acked > 0) self.ccOnAck(bytes_acked, now_ns);
@@ -706,12 +861,21 @@ pub const Recovery = struct {
                     // Re-run time-threshold pass for this space
                     const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
                     var next_loss: ?u64 = null;
+                    // In send order (SONNY-6434) the expired packets are a
+                    // prefix and the first unexpired one holds the next
+                    // deadline, so the scan stops there.
+                    var scanned: usize = 0;
                     for (sstate.sent.items) |*sp| {
+                        sstate.entries_visited +%= 1;
+                        scanned += 1;
                         if (!sp.acked and !sp.declared_lost and sp.ack_eliciting) {
                             const deadline = deadlineAfter(sp.time_ns, tt_base);
+                            if (now_ns < deadline and sstate.in_send_order) {
+                                next_loss = deadline;
+                                break;
+                            }
                             if (now_ns >= deadline) {
                                 sp.declared_lost = true;
-                                _ = sstate.sent_index.remove(sp.pn);
                                 total_lost = addSaturatingUsize(total_lost, sp.size);
                                 if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
                                 if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
@@ -722,7 +886,7 @@ pub const Recovery = struct {
                     }
                     sstate.loss_time_ns = next_loss;
                     // Compact declared_lost entries so sent list doesn't grow unbounded
-                    sstate.compact();
+                    sstate.compactHead(scanned);
                 }
             }
         }
@@ -807,23 +971,15 @@ pub const Recovery = struct {
         const idx = spaceIdx(space);
         const sstate = &self.spaces[idx];
 
-        if (sstate.sent_index.get(pn)) |sent_slot| {
-            if (sent_slot < sstate.sent.items.len) {
-                const sp = sstate.sent.items[sent_slot];
-                if (sp.acked) return .acked;
-                if (sp.declared_lost) return .lost;
-                return .in_flight;
-            }
-        }
-
-        for (sstate.sent.items) |sp| {
-            if (sp.pn != pn) continue;
-            if (sp.acked) return .acked;
-            if (sp.declared_lost) return .lost;
-            return .in_flight;
-        }
-
-        return .unknown;
+        // `sent` is sorted by packet number: a binary search finds the
+        // packet or proves it untracked (SONNY-6434: the former linear
+        // fallback ran on every ACK for every retransmission entry).
+        const sent_slot = sstate.find(pn) orelse return .unknown;
+        self.delivery_lookup_entries_visited +%= 1;
+        const sp = sstate.sent.items[sent_slot];
+        if (sp.acked) return .acked;
+        if (sp.declared_lost) return .lost;
+        return .in_flight;
     }
 
     // Thread-safe accessors for congestion control state
@@ -882,6 +1038,23 @@ pub const Recovery = struct {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.spaces[spaceIdx(space)].sent.items.len;
+    }
+
+    /// Cumulative sent-packet entries visited by ACK marking, loss detection,
+    /// compaction and capacity enforcement in `space` (SONNY-6434
+    /// diagnostic; lets tests bound amortized recovery work per packet).
+    pub fn entriesVisited(self: *Recovery, space: PacketNumberSpace) u64 {
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        return self.spaces[spaceIdx(space)].entries_visited;
+    }
+
+    /// Cumulative sent-packet entries examined by getPacketDeliveryState()
+    /// (SONNY-6434 diagnostic; lets tests bound per-ACK lookup work).
+    pub fn deliveryLookupEntriesVisited(self: *Recovery) u64 {
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        return self.delivery_lookup_entries_visited;
     }
 };
 

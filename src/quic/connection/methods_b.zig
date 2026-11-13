@@ -33,31 +33,104 @@ pub fn bind(comptime Connection: type) type {
         ) void {
             if (!self.app_stream_retx_init) return;
             const owned = self.allocator.dupe(u8, data) catch return;
-            const StreamTxPacket = @FieldType(@TypeOf(self.app_stream_retx).KV, "value");
-            const entry: StreamTxPacket = .{
+            putAppStreamRetx(self, pn, .{
                 .stream_id = stream_id,
                 .offset = offset,
                 .fin = fin,
                 .data = owned,
                 .retransmit_count = @as(u16, 0),
-            };
+            });
+        }
+
+        fn RetxEntry(comptime C: type) type {
+            return @FieldType(@FieldType(C, "app_stream_retx").KV, "value");
+        }
+
+        /// Index of the first element of ascending `pns` that is >= `pn`.
+        fn lowerBoundPn(pns: []const u64, pn: u64) usize {
+            var lo: usize = 0;
+            var hi: usize = pns.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (pns[mid] < pn) lo = mid + 1 else hi = mid;
+            }
+            return lo;
+        }
+
+        /// Live (not yet pruned) part of the ascending retransmit PN order.
+        fn retxOrder(self: *Connection) []u64 {
+            return self.app_stream_retx_order.items[self.app_stream_retx_head..];
+        }
+
+        /// Track `entry` under `pn` in the retransmit map and its PN order.
+        /// Takes ownership of `entry.data`; frees it if tracking fails.
+        fn putAppStreamRetx(self: *Connection, pn: u64, entry: RetxEntry(Connection)) void {
+            const order = retxOrder(self);
+            const at = lowerBoundPn(order, pn);
+            const in_order = at < order.len and order[at] == pn;
+            if (!in_order) {
+                self.app_stream_retx_order.ensureUnusedCapacity(self.allocator.*, 1) catch {
+                    self.allocator.free(entry.data);
+                    return;
+                };
+            }
             // QUAL-08: getOrPut so a packet-number collision (e.g. PTO/probe
             // paths reusing retransmission tracking) frees the displaced entry's
             // buffer instead of leaking it.
             const gop = self.app_stream_retx.getOrPut(pn) catch {
-                self.allocator.free(owned);
+                self.allocator.free(entry.data);
                 return;
             };
             if (gop.found_existing) self.allocator.free(gop.value_ptr.data);
             gop.value_ptr.* = entry;
+            if (!in_order) {
+                // New packet numbers are the largest so far: an append.
+                self.app_stream_retx_order.insertAssumeCapacity(self.app_stream_retx_head + at, pn);
+            }
+        }
+
+        /// Drop PNs whose entry is gone from the front of the order, and
+        /// compact the order once it is mostly dead space. Amortized O(1)
+        /// per tracked packet.
+        fn pruneAppStreamRetxOrder(self: *Connection) void {
+            const order = &self.app_stream_retx_order;
+            while (self.app_stream_retx_head < order.items.len and
+                !self.app_stream_retx.contains(order.items[self.app_stream_retx_head]))
+            {
+                self.app_stream_retx_head += 1;
+            }
+            const live = order.items.len - self.app_stream_retx_head;
+            const stale = live -| self.app_stream_retx.count();
+            if (stale > 64 and stale > self.app_stream_retx.count()) {
+                // Out-of-band removals left dead PNs mid-order; filter them.
+                var w: usize = 0;
+                for (order.items[self.app_stream_retx_head..]) |pn| {
+                    if (!self.app_stream_retx.contains(pn)) continue;
+                    order.items[w] = pn;
+                    w += 1;
+                }
+                order.items.len = w;
+                self.app_stream_retx_head = 0;
+            } else if (self.app_stream_retx_head > 64 and self.app_stream_retx_head * 2 >= order.items.len) {
+                std.mem.copyForwards(u64, order.items[0..live], order.items[self.app_stream_retx_head..]);
+                order.items.len = live;
+                self.app_stream_retx_head = 0;
+            }
+        }
+
+        /// Oldest packet number still tracked for STREAM retransmission.
+        fn oldestAppStreamRetxPn(self: *Connection) ?u64 {
+            pruneAppStreamRetxOrder(self);
+            const order = retxOrder(self);
+            return if (order.len == 0) null else order[0];
         }
 
         /// Inclusive packet-number interval acknowledged by one ACK range.
-        const AckedInterval = struct { lo: u64, hi: u64 };
+        const AckedInterval = recovery.Recovery.AckedRange;
 
         /// Decode an ACK frame's ranges (RFC 9000 §19.3.1) into inclusive
-        /// [lo, hi] intervals, newest first. Unlike the PN enumeration fed to
-        /// recovery, this is not capped by the number of packets acknowledged:
+        /// [lo, hi] intervals, newest first. Unlike enumerating packet
+        /// numbers, this is not bounded by how many packets are acknowledged:
         /// one interval per range, bounded by the frame's range count.
         fn ackedIntervals(largest: u64, first_range: u64, ranges: []const frame.AckRange, out: []AckedInterval) []AckedInterval {
             if (out.len == 0) return out[0..0];
@@ -92,28 +165,38 @@ pub fn bind(comptime Connection: type) type {
         /// Drop retransmission state for every tracked STREAM packet the
         /// peer's ACK frame covers.
         ///
-        /// This must test range membership rather than walk an enumerated PN
-        /// list: the enumeration handed to recovery is capped (256 PNs), so a
-        /// wide ACK range would leave acknowledged packets tracked. Exact
-        /// removal here is what lets every entry still tracked below the
-        /// largest acknowledged PN be treated as unacknowledged data.
+        /// Each interval is located in the ascending PN order by binary
+        /// search and only the tracked packets inside it are visited and
+        /// removed (SONNY-6434: this used to walk the whole map on every
+        /// ACK). Exact removal by range membership is what lets every entry
+        /// still tracked below the largest acknowledged PN be treated as
+        /// unacknowledged data.
         fn dropAckedStreamTracking(self: *Connection, intervals: []const AckedInterval) void {
             if (!self.app_stream_retx_init) return;
-            if (intervals.len == 0) return;
-            var acked_pns: std.ArrayList(u64) = .empty;
-            defer acked_pns.deinit(self.allocator.*);
-            var it = self.app_stream_retx.iterator();
-            while (it.next()) |entry| {
-                const pn = entry.key_ptr.*;
-                if (pnInAckedIntervals(intervals, pn)) {
-                    acked_pns.append(self.allocator.*, pn) catch break;
+            for (intervals) |iv| {
+                const order = retxOrder(self);
+                if (order.len == 0) break;
+                if (iv.hi < order[0] or iv.lo > order[order.len - 1]) continue;
+                const a = lowerBoundPn(order, iv.lo);
+                const b = if (iv.hi == std.math.maxInt(u64)) order.len else lowerBoundPn(order, iv.hi + 1);
+                if (a == b) continue;
+                for (order[a..b]) |pn| {
+                    self.ack_retx_entries_visited +%= 1;
+                    if (self.app_stream_retx.fetchRemove(pn)) |removed| {
+                        self.allocator.free(removed.value.data);
+                    }
+                }
+                // Splice [a, b) out of the order (usually a prefix).
+                const base = self.app_stream_retx_head;
+                const list = &self.app_stream_retx_order;
+                if (a == 0) {
+                    self.app_stream_retx_head += b;
+                } else {
+                    std.mem.copyForwards(u64, list.items[base + a ..], list.items[base + b ..]);
+                    list.items.len -= b - a;
                 }
             }
-            for (acked_pns.items) |pn| {
-                if (self.app_stream_retx.fetchRemove(pn)) |removed| {
-                    self.allocator.free(removed.value.data);
-                }
-            }
+            pruneAppStreamRetxOrder(self);
         }
 
         fn recordAppStreamRetransmitAttempt(tracked: anytype) void {
@@ -122,22 +205,71 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
+        /// Encode and send `tracked` as a STREAM frame in a new 1-RTT packet
+        /// numbered `self.pn_app_tx`. Returns the packet length if the whole
+        /// datagram was sent; on any failure nothing was sent.
+        fn sendStreamRetransmission(self: *Connection, tx: anytype, tracked: RetxEntry(Connection)) ?usize {
+            var frame_storage: [2048]u8 = undefined;
+            var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
+            _ = (frame.Frame{
+                .stream = .{
+                    .stream_id = tracked.stream_id,
+                    .offset = tracked.offset,
+                    .fin = tracked.fin,
+                    .data = tracked.data,
+                },
+            }).write(frame_stream.writer()) catch return null;
+            const frame_bytes = frame_storage[0..frame_stream.pos];
+            const packet_storage = self.packet_pool.checkout() catch return null;
+            defer self.packet_pool.release(packet_storage);
+            const pkt_len = packet.encodeShortProtectedInto(
+                packet_storage,
+                self.shortHeaderDcid(),
+                @as(u32, @truncate(self.pn_app_tx)),
+                2,
+                frame_bytes,
+                .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                self.tx_key_phase,
+            ) catch return null;
+            const pkt = packet_storage[0..pkt_len];
+            const sent = self.send(pkt) catch return null;
+            if (sent != pkt.len) return null;
+            return pkt.len;
+        }
+
+        /// Retransmit STREAM data lost below the largest acknowledged PN,
+        /// oldest first, at most two packets per ACK.
+        ///
+        /// A tracked packet below `largest_acked` is lost once it is
+        /// kPacketThreshold (3) packets older (RFC 9002 §6.1.1), or as soon
+        /// as recovery reported loss on this ACK (time threshold, §6.1.2:
+        /// recovery compacts lost packets away, so their state is no longer
+        /// queryable here). Acknowledged packets were already removed by
+        /// dropAckedStreamTracking(), and packets above the largest
+        /// acknowledged are never lost on an ACK (§6.1) -- they are left to
+        /// later ACKs or the PTO (§6.2).
+        ///
+        /// Walking the ascending PN order means both conditions hold for a
+        /// prefix of it, so the walk stops at the first entry that is not
+        /// lost and visits O(budget) entries (SONNY-6434: it used to scan the
+        /// whole map and query recovery for every entry, each query a
+        /// linear scan of the sent packets when the packet was untracked).
         fn retransmitLostStreamPackets(self: *Connection, largest_acked_opt: ?u64, recovery_reported_loss: bool) void {
             if (!self.app_stream_retx_init) return;
             if (!self.hasConfirmedAppTxKeys()) return;
-
+            const largest_acked = largest_acked_opt orelse return;
             const tx = self.app_tx_keys.?;
-            var lost_pns: std.ArrayList(u64) = .empty;
-            defer lost_pns.deinit(self.allocator.*);
 
-            var it = self.app_stream_retx.iterator();
-            while (it.next()) |entry| {
-                const pn = entry.key_ptr.*;
-                const rec_lost = (self.rec.getPacketDeliveryState(.Application, pn) == .lost);
-                const ack_gap_lost = if (largest_acked_opt) |largest_acked|
-                    (largest_acked > pn and (largest_acked - pn) >= 3)
-                else
-                    false;
+            var retransmitted: usize = 0;
+            var i: usize = 0;
+            while (retransmitted < 2) : (i += 1) {
+                const order = retxOrder(self);
+                if (i >= order.len) break;
+                const lost_pn = order[i];
+                self.ack_retx_entries_visited +%= 1;
+                const tracked_ptr = self.app_stream_retx.getPtr(lost_pn) orelse continue;
+                if (lost_pn >= largest_acked) break;
+                const ack_gap_lost = (largest_acked - lost_pn) >= 3;
                 // CANARY: REQ=REQ-QUIC-HC-138; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AppStreamTimeLossRetx; STATUS=TESTED; TEST=app_ack_time_threshold_loss_retransmits_retained_STREAM_data; OWNER=transport; UPDATED=2026-05-28
                 //
                 // Recovery compacts packets as soon as they are acked or
@@ -148,65 +280,14 @@ pub fn bind(comptime Connection: type) type {
                 // recovery reported app loss on this ACK, any retained STREAM
                 // packet older than the largest ACK is still unacked
                 // application data and must be retransmitted.
-                const recovery_loss_older_than_largest = if (largest_acked_opt) |largest_acked|
-                    recovery_reported_loss and largest_acked > pn
-                else
-                    false;
-                if (rec_lost or ack_gap_lost or recovery_loss_older_than_largest) {
-                    lost_pns.append(self.allocator.*, pn) catch break;
-                }
-            }
-            std.sort.pdq(u64, lost_pns.items, {}, std.sort.asc(u64));
-
-            var retransmitted: usize = 0;
-            for (lost_pns.items) |lost_pn| {
-                if (retransmitted >= 2) break;
-                const removed = self.app_stream_retx.fetchRemove(lost_pn) orelse continue;
-                var tracked = removed.value;
-
-                var frame_storage: [2048]u8 = undefined;
-                var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
-                _ = (frame.Frame{
-                    .stream = .{
-                        .stream_id = tracked.stream_id,
-                        .offset = tracked.offset,
-                        .fin = tracked.fin,
-                        .data = tracked.data,
-                    },
-                }).write(frame_stream.writer()) catch {
-                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
-                    continue;
-                };
-                const frame_bytes = frame_storage[0..frame_stream.pos];
-                const packet_storage = self.packet_pool.checkout() catch {
-                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
-                    continue;
-                };
-                defer self.packet_pool.release(packet_storage);
+                if (!ack_gap_lost and !recovery_reported_loss) break;
 
                 const next_pn = self.pn_app_tx;
-                const pkt_len = packet.encodeShortProtectedInto(
-                    packet_storage,
-                    self.shortHeaderDcid(),
-                    @as(u32, @truncate(next_pn)),
-                    2,
-                    frame_bytes,
-                    .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
-                    self.tx_key_phase,
-                ) catch {
-                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
-                    continue;
-                };
-                const pkt = packet_storage[0..pkt_len];
-                const sent = self.send(pkt) catch {
-                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
-                    continue;
-                };
-                if (sent != pkt.len) {
-                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
-                    continue;
-                }
-
+                // A failed send (WouldBlock, pool exhausted) leaves the entry
+                // tracked for the next ACK or PTO. Stop rather than re-encode
+                // every remaining lost packet against a full socket.
+                const pkt_len = sendStreamRetransmission(self, tx, tracked_ptr.*) orelse break;
+                var tracked = self.app_stream_retx.fetchRemove(lost_pn).?.value;
                 recordAppStreamRetransmitAttempt(&tracked);
                 logger.debugPrint(
                     "[stream-retx] pn={} -> pn={} stream={} off={} len={} fin={} attempt={}\n",
@@ -220,13 +301,11 @@ pub fn bind(comptime Connection: type) type {
                         tracked.retransmit_count,
                     },
                 );
-                self.onShortHeaderPacketSent(pkt.len, true);
-
-                self.app_stream_retx.put(next_pn, tracked) catch {
-                    self.allocator.free(tracked.data);
-                };
+                self.onShortHeaderPacketSent(pkt_len, true);
+                putAppStreamRetx(self, next_pn, tracked);
                 retransmitted += 1;
             }
+            pruneAppStreamRetxOrder(self);
 
             // No cumulative "prune below largest" pass here. Recovery compacts
             // a packet away as soon as it is declared lost, so a lost packet
@@ -913,44 +992,18 @@ pub fn bind(comptime Connection: type) type {
         /// ECN counters, key update finalization, and PMTUD probe validation.
         pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange, ecn: ?frame.EcnCounts) void {
             self.markPtoDirty(); // #182: notify endpoint dirty-set
-            // Build list of acked PNs from ACK ranges per RFC 9000 §13.2.3
-            var buf: [256]u64 = undefined; // supports reasonably many acked packets per event
-            var count: usize = 0;
-            const add_range = struct {
-                fn f(dst: []u64, start: u64, len_inclusive: u64, idx: *usize) void {
-                    var pn: i128 = @intCast(start);
-                    var rem: u64 = len_inclusive + 1; // first_range is len-1
-                    while (rem > 0 and idx.* < dst.len) : (rem -= 1) {
-                        dst[idx.*] = @intCast(pn);
-                        idx.* += 1;
-                        pn -= 1;
-                    }
-                }
-            }.f;
-            // First range: [largest - first_range, largest]
-            const first_start = largest;
-            add_range(&buf, first_start, first_range, &count);
-            // Subsequent ranges
-            var cursor: u64 = if (largest >= first_range) largest - first_range else 0;
-            for (ranges) |r| {
-                // Gap: r.gap means skip (gap + 1) packet numbers
-                const gap_skip = r.gap + 1;
-                if (cursor > gap_skip) cursor -= gap_skip else cursor = 0;
-                if (cursor == 0) break;
-                const range_end = cursor - 1;
-                add_range(&buf, range_end, r.len, &count);
-                cursor = if (range_end >= r.len) range_end - r.len else 0;
-                if (cursor == 0) break;
-            }
-            const acked = buf[0..count];
+            // ACK ranges per RFC 9000 §19.3.1, as inclusive intervals. Passing
+            // ranges (not an enumeration of packet numbers, formerly capped at
+            // 256) lets recovery acknowledge every packet the frame covers.
+            var interval_buf: [frame_ack_max_ranges + 1]AckedInterval = undefined;
+            const intervals = ackedIntervals(largest, first_range, ranges, &interval_buf);
             if (space == .Application) {
-                var interval_buf: [frame_ack_max_ranges + 1]AckedInterval = undefined;
-                dropAckedStreamTracking(self, ackedIntervals(largest, first_range, ranges, &interval_buf));
+                dropAckedStreamTracking(self, intervals);
             }
             // Update recovery for given space
             const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
-            const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
+            const res = self.rec.onAckRangesReceivedWithEcn(space, intervals, 0, now_ns, ecn);
             if (res.bytes_acked > 0) {
                 _ = self.tx_credit_generation.fetchAdd(1, .release);
                 std.Io.Threaded.global_single_threaded.io().futexWake(u32, &self.tx_credit_generation.raw, std.math.maxInt(u32));
@@ -972,15 +1025,7 @@ pub fn bind(comptime Connection: type) type {
             // Note: This branch also serves as the authoritative place to advance PMTUD state on App acks.
             if (space == .Application) {
                 if (self.probe_pending_pn) |ppn| {
-                    var i: usize = 0;
-                    var got: bool = false;
-                    while (i < acked.len) : (i += 1) {
-                        if (acked[i] == ppn) {
-                            got = true;
-                            break;
-                        }
-                    }
-                    if (got) {
+                    if (pnInAckedIntervals(intervals, ppn)) {
                         // Accept new MTU but never below 1200 (defensive)
                         const new_sz: u16 = @max(@as(u16, 1200), self.probe_pending_size);
                         self.path_mtu = new_sz;
@@ -1429,16 +1474,7 @@ pub fn bind(comptime Connection: type) type {
             // alive but don't make application delivery progress under heavy
             // loss/corruption.
             if (self.app_stream_retx_init and self.app_stream_retx.count() > 0) {
-                var selected_pn: ?u64 = null;
-                var it = self.app_stream_retx.iterator();
-                while (it.next()) |entry| {
-                    const pn = entry.key_ptr.*;
-                    if (selected_pn == null or pn < selected_pn.?) {
-                        selected_pn = pn;
-                    }
-                }
-
-                if (selected_pn) |probe_pn| {
+                if (oldestAppStreamRetxPn(self)) |probe_pn| {
                     if (self.app_stream_retx.fetchRemove(probe_pn)) |removed| {
                         var tracked = removed.value;
                         var frame_storage: [2048]u8 = undefined;
@@ -1452,7 +1488,7 @@ pub fn bind(comptime Connection: type) type {
                             },
                         }).write(frame_stream.writer()) catch |err| {
                             logger.err("PTO App STREAM frame write failed: {s}", .{@errorName(err)});
-                            self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                            putAppStreamRetx(self, probe_pn, tracked);
                             self.markPtoDirty();
                             return;
                         };
@@ -1460,7 +1496,7 @@ pub fn bind(comptime Connection: type) type {
 
                         if (frame_bytes.len > 0) {
                             const packet_storage = self.packet_pool.checkout() catch {
-                                self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                                putAppStreamRetx(self, probe_pn, tracked);
                                 self.markPtoDirty();
                                 return;
                             };
@@ -1481,7 +1517,7 @@ pub fn bind(comptime Connection: type) type {
                                 if (sent == pkt.len) {
                                     recordAppStreamRetransmitAttempt(&tracked);
                                     self.onShortHeaderPacketSent(pkt.len, true);
-                                    self.app_stream_retx.put(next_pn, tracked) catch self.allocator.free(tracked.data);
+                                    putAppStreamRetx(self, next_pn, tracked);
                                     return;
                                 }
                             }
@@ -1493,7 +1529,7 @@ pub fn bind(comptime Connection: type) type {
                         // timer. No packet was recorded via
                         // onShortHeaderPacketSent(), so explicitly dirty the
                         // connection after restoring the retransmit entry.
-                        self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                        putAppStreamRetx(self, probe_pn, tracked);
                         self.markPtoDirty();
                     }
                 }

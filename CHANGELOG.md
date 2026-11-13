@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.49] - 2026-11-12
+
+### Fixed
+
+- ACK processing no longer does work proportional to the packets in flight, which stalled bulk transfers of more than about 11 MB (Geode remote `backup create` stopped at about 46%, with the server's network thread down to about 80 packets/s). Every application-space ACK walked the whole STREAM retransmit map, and for every entry recovery no longer tracked, `Recovery.getPacketDeliveryState` scanned every sent packet: millions of steps per ACK once thousands of packets were in flight. The retransmit map now keeps its packet numbers in ascending order, so an ACK visits only the entries its ranges cover plus at most the two it retransmits, oldest first, below the largest acknowledged (RFC 9002 §6.1). `getPacketDeliveryState` uses its index only. Recovery takes the ACK frame's ranges (`Recovery.onAckRangesReceivedWithEcn`) instead of at most 256 enumerated packet numbers, so an ACK covering more packets no longer leaves the rest to be declared lost and cut the congestion window. A retransmission whose send fails now stops that ACK's retransmit pass instead of re-encoding every remaining lost packet; the data stays tracked for the next ACK or PTO (SONNY-6434).
+- Recovery no longer does work proportional to the tracked packets on every send and every ACK. Once 4096 packets were tracked, recording each packet compacted the list and rebuilt its packet-number hash index twice while the writer held the connection lock (about 0.9 ms per packet in a Debug build), and every ACK rescanned and re-indexed the whole set, so the server's receive path fell behind and Geode's acceptor watchdog restarted it mid-backup. Tracked packets are now kept sorted by packet number and looked up by binary search; the cap drops the oldest eighth at once; and for packets recorded in send order loss detection walks only the lost prefix (both RFC 9002 §6.1 thresholds select a prefix), with the full scan kept for out-of-order input. Loss-detection results are unchanged (SONNY-6434).
+
 ## [0.1.48] - 2026-10-28
 
 ### Fixed
