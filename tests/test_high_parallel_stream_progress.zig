@@ -24,7 +24,14 @@ const PAYLOAD_BYTES: usize = 1024;
 // handshake deadline and every stream/FIN assertion, with bounded headroom
 // for Debug's unoptimized cryptography rather than timing out healthy peers.
 const HANDSHAKE_TIMEOUT_MS: i64 = if (builtin.mode == .Debug) 30_000 else 5_000;
-const RT_TIMEOUT_MS: i64 = 7_000;
+// The echo/FIN phase needs the same Debug allowance (SONNY-6434 follow-up).
+// On a CPU-starved runner the single server poller falls behind 32 clients:
+// its UDP receive queue held ~13 MB while clients waited, every echo was
+// sent after its client had given up, and the release-tuned 7 s window
+// failed at the same rate on v0.1.48 (274109b) as on the current code
+// (interleaved constrained runs of the CI command). A wedged stream still
+// fails: it never completes within any deadline.
+const RT_TIMEOUT_MS: i64 = if (builtin.mode == .Debug) 30_000 else 7_000;
 
 fn nowMs() i64 {
     var ts: std.os.linux.timespec = undefined;
@@ -190,6 +197,15 @@ fn recordFailure(ctx: ClientCtx, phase: []const u8) void {
     _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
 }
 
+/// Per-client state at an echo/FIN deadline, to tell a starved peer (the
+/// server never acknowledged anything) from a stalled stream.
+fn reportStreamTimeout(ctx: ClientCtx, conn: *api.Connection, sid: api.QuicStreamId, handshake_ms: i64, waited_ms: i64, received: usize) void {
+    std.debug.print(
+        "high-parallel client {d}: handshake_ms={d} waited_ms={d} received={d}/{d} peer_fin={} pto_app_count={d} pn_app_tx={d} largest_acked={d} tracked_stream_packets={d}\n",
+        .{ ctx.index, handshake_ms, waited_ms, received, PAYLOAD_BYTES, api.isStreamFinished(conn, sid), conn.pto_app_count, conn.pn_app_tx, conn.largest_acked, conn.app_stream_retx.count() },
+    );
+}
+
 fn clientThread(ctx: ClientCtx) void {
     var cli_cfg = cfg.QuicConfig{
         .alpn = &test_alpn,
@@ -206,7 +222,8 @@ fn clientThread(ctx: ClientCtx) void {
         return;
     };
 
-    const hs_deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
+    const hs_start = nowMs();
+    const hs_deadline = hs_start + HANDSHAKE_TIMEOUT_MS;
     while (nowMs() < hs_deadline and !api.isHandshakeConfirmed(conn)) {
         _ = ep.pollWithStats(1) catch {};
     }
@@ -215,6 +232,7 @@ fn clientThread(ctx: ClientCtx) void {
         return;
     }
 
+    const handshake_ms = nowMs() - hs_start;
     var payload: [PAYLOAD_BYTES]u8 = undefined;
     for (&payload, 0..) |*b, i| b.* = @truncate(i + ctx.index);
 
@@ -223,7 +241,8 @@ fn clientThread(ctx: ClientCtx) void {
         return;
     };
 
-    const rt_deadline = nowMs() + RT_TIMEOUT_MS;
+    const rt_start = nowMs();
+    const rt_deadline = rt_start + RT_TIMEOUT_MS;
     var sent: usize = 0;
     while (sent < payload.len) {
         if (nowMs() >= rt_deadline) {
@@ -283,6 +302,7 @@ fn clientThread(ctx: ClientCtx) void {
         }
     }
 
+    reportStreamTimeout(ctx, conn, sid, handshake_ms, nowMs() - rt_start, received);
     recordFailure(ctx, "echo or peer FIN deadline");
 }
 

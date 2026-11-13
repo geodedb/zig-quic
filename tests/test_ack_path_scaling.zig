@@ -364,6 +364,34 @@ fn sendPackets(rec: *recovery.Recovery, count: u64) !void {
 // RFC 9002 §6.1.1 via the range API, on both marking strategies (probe each
 // PN for narrow ranges, test each tracked packet for wide ones), against the
 // packet-number-list API. Time threshold (§6.1.2) is held off by a long RTT.
+// The packet-number-list API (loss_detection_scan benchmark, tests) must
+// mark a run of acknowledged packets in amortized constant lookups, as the
+// former hash index did: a binary search per packet number regressed the
+// benchmark's N=1000 tail latency by ~50% on the CI runner.
+test "SONNY-6434 packet-number list ACK marks runs without a search per packet" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    try sendPackets(&rec, 1000);
+    var acked: [500]u64 = undefined;
+    for (&acked, 0..) |*pn, i| pn.* = 250 + i;
+    var descending: [100]u64 = undefined;
+    for (&descending, 0..) |*pn, i| pn.* = 999 - i;
+
+    const before = rec.searchProbes(.Application);
+    const res = rec.onAckReceivedWithEcn(.Application, &acked, 0, @intCast(compat.nanoTimestamp()), null);
+    try std.testing.expectEqual(@as(usize, 500 * 100), res.bytes_acked);
+    const res2 = rec.onAckReceivedWithEcn(.Application, &descending, 0, @intCast(compat.nanoTimestamp()), null);
+    try std.testing.expectEqual(@as(usize, 100 * 100), res2.bytes_acked);
+    const probes = rec.searchProbes(.Application) - before;
+    // A constant number of probes per listed packet (the old hash index
+    // made one) plus one search per run and compaction's bounds; a binary
+    // search per packet takes ~10 each.
+    if (probes > 2 * 600 + 64) {
+        std.debug.print("SONNY-6434: {} search probes to mark 600 listed packets\n", .{probes});
+        return error.MarkingNotAmortized;
+    }
+}
+
 test "SONNY-6434 recovery ACK ranges acknowledge exactly the covered packets" {
     const Case = struct { ranges: []const recovery.Recovery.AckedRange, pns: []const u64 };
     const narrow: Case = .{
