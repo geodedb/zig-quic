@@ -104,6 +104,13 @@ pub const QuicConfig = struct {
     // caller (e.g. geode cluster TLS) so the api-client path actually honors the CA.
     // Backing memory must outlive every TLS context created from this config.
     inline_ca_chain_der: ?[]const []const u8 = null,
+    // mTLS server: DER CA certificates trusted for CLIENT certificates (RFC 8446
+    // §4.4.2, RFC 5280 §6.1). Handed to every server connection's TLS context
+    // as its trust anchors, so only these CAs are trusted for client
+    // certificates and a client chain sent without its CA is completed from
+    // them (SONNY-6457). null keeps the process-global trust store. Backing
+    // memory must outlive every TLS context created from this config.
+    inline_client_ca_der: ?[]const []const u8 = null,
     // Exempt localhost (127.0.0.1 / ::1) from anti-amplification and address validation.
     // Default true preserves existing behaviour; set false to enforce strict RFC 9000 §8.1
     // amplification limits even on loopback (useful for conformance testing). (#124)
