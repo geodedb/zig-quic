@@ -95,6 +95,9 @@ const SpaceState = struct {
     /// one by ACK marking, loss detection, compaction and capacity
     /// enforcement. Bulk moves are not counted.
     entries_visited: u64 = 0,
+    /// Diagnostic counter (SONNY-6434 follow-up): binary-search probes made
+    /// by packet-number lookups.
+    search_probes: u64 = 0,
 
     fn init(alloc: std.mem.Allocator) SpaceState {
         return .{
@@ -107,11 +110,12 @@ const SpaceState = struct {
     }
 
     /// Index of the first entry whose packet number is >= `pn`.
-    fn lowerBound(self: *const SpaceState, pn: u64) usize {
+    fn lowerBound(self: *SpaceState, pn: u64) usize {
         const items = self.sent.items;
         var lo: usize = 0;
         var hi: usize = items.len;
         while (lo < hi) {
+            self.search_probes +%= 1;
             const mid = lo + (hi - lo) / 2;
             if (items[mid].pn < pn) lo = mid + 1 else hi = mid;
         }
@@ -119,19 +123,46 @@ const SpaceState = struct {
     }
 
     /// Index of the first entry whose packet number is > `pn`.
-    fn upperBound(self: *const SpaceState, pn: u64) usize {
+    fn upperBound(self: *SpaceState, pn: u64) usize {
         const items = self.sent.items;
         var lo: usize = 0;
         var hi: usize = items.len;
         while (lo < hi) {
+            self.search_probes +%= 1;
             const mid = lo + (hi - lo) / 2;
             if (items[mid].pn <= pn) lo = mid + 1 else hi = mid;
         }
         return lo;
     }
 
+    /// Slot of the most recently recorded entry for `pn`, if tracked,
+    /// checking `hint` and its neighbours before searching. ACK frames list
+    /// packet numbers in runs, so passing the previous hit makes marking a
+    /// run O(1) per packet, as the former hash index was.
+    fn findNear(self: *SpaceState, pn: u64, hint: usize) ?usize {
+        const items = self.sent.items;
+        if (hint < items.len) {
+            // Next slot first (ascending runs), then previous (descending
+            // runs, e.g. enumerated from the largest), then the hint itself.
+            const candidates = [_]?usize{
+                if (hint + 1 < items.len) hint + 1 else null,
+                if (hint > 0) hint - 1 else null,
+                hint,
+            };
+            for (candidates) |c| {
+                const i = c orelse continue;
+                self.search_probes +%= 1;
+                if (items[i].pn != pn) continue;
+                // Duplicates keep insertion order; the newest is the last.
+                if (i + 1 < items.len and items[i + 1].pn == pn) break;
+                return i;
+            }
+        }
+        return self.find(pn);
+    }
+
     /// Slot of the most recently recorded entry for `pn`, if tracked.
-    fn find(self: *const SpaceState, pn: u64) ?usize {
+    fn find(self: *SpaceState, pn: u64) ?usize {
         const i = self.upperBound(pn);
         if (i == 0 or self.sent.items[i - 1].pn != pn) return null;
         return i - 1;
@@ -379,6 +410,8 @@ pub const Recovery = struct {
         ack_eliciting_acked: bool = false,
         largest_pn: u64,
         largest_acked_pkt_time: ?u64 = null,
+        /// Slot of the previous packet-number-list hit (see findNear).
+        hint: usize = std.math.maxInt(usize),
 
         fn add(self: *AckMark, sp: *SentPacket) void {
             if (sp.acked or sp.declared_lost) return;
@@ -392,9 +425,10 @@ pub const Recovery = struct {
         }
     };
 
-    /// Mark the tracked packet `pn` acknowledged (binary search).
+    /// Mark the tracked packet `pn` acknowledged.
     fn markAckedPn(sstate: *SpaceState, pn: u64, mark: *AckMark) void {
-        const sent_slot = sstate.find(pn) orelse return;
+        const sent_slot = sstate.findNear(pn, mark.hint) orelse return;
+        mark.hint = sent_slot;
         sstate.entries_visited +%= 1;
         mark.add(&sstate.sent.items[sent_slot]);
     }
@@ -1038,6 +1072,15 @@ pub const Recovery = struct {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.spaces[spaceIdx(space)].sent.items.len;
+    }
+
+    /// Cumulative sent-packet entries visited by ACK marking, loss detection,
+    /// compaction and capacity enforcement in `space` (SONNY-6434
+    /// diagnostic; lets tests bound amortized recovery work per packet).
+    pub fn searchProbes(self: *Recovery, space: PacketNumberSpace) u64 {
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        return self.spaces[spaceIdx(space)].search_probes;
     }
 
     /// Cumulative sent-packet entries visited by ACK marking, loss detection,
