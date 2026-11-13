@@ -531,3 +531,62 @@ Capture digests:
 | `e2dbef30-baseline.r1.json` | `c2f72efb26f07217d617cab3d06e7e81cb5f2888622610a3cd9cd54b9ac52bdd` |
 | `e2dbef30-baseline.r2.json` | `6629e8e0095fc9227eda9ab42d2d19d3a7e80a3cf9fbc663f3e8690928be9cba` |
 | `e2dbef30-baseline.r3.json` | `6f520f55a94f9a7863f889f81e360d55c9a3af44964000598388a4a76f2493d5` |
+
+### 2026-11-12 — Bounded ACK and recovery work for bulk streams (SONNY-6434)
+
+A Geode remote backup of about 24 MB stalled because ACK processing and
+packet recording did work proportional to the packets in flight: the
+retransmit walk queried recovery for every tracked STREAM packet (a linear
+scan per untracked packet), and at the 4096-packet tracking cap every
+recorded packet and every ACK rebuilt recovery's packet-number hash index.
+The candidate is `62a759f` on `fix/sonny-6434-ack-path-linear-scan`, based
+on `274109bd5a0a268b7e64cd00a406d00a61bd1de2` (v0.1.48, origin/main).
+
+`zig build test-ack-path-scaling` (Debug, in-memory peer, 24 MiB stream with
+0.25% loss, reordering, lost and stretch ACKs): the first ACK did 8,273,888
+units of work before the fix and at most 603 after (the 600-packet stretch
+ACK); recovery visited 82,979,713 entries before and about 37,200 after;
+`writeStream` time fell from 16,336 ms to about 2,000 ms and ACK processing
+from 801 ms to about 170 ms for 18.7k packets.
+
+Paired micro gate, three alternating rounds on a shared Linux x86_64 host
+(Zig 0.16.0, `-j3`, other builds running):
+
+```sh
+PERF_GATE_ROUNDS=3 bash scripts/perf-gate.sh \
+  --baseline-commit=274109bd5a0a268b7e64cd00a406d00a61bd1de2 --suite=micro
+```
+
+Gate exit: **0; zero reproduced failures and 9 non-reproduced warnings**.
+`micro/loss_detection_scan` throughput rose 1.7x to 3.8x across N=100 to
+100,000 in every round (for example N=10,000: 1,777-2,419 to 4,116-4,243
+ops/s), with p95 down 22-70%.
+
+One paired integration round (`--baseline-commit`, `--suite=integration`)
+passed every row that needs no TLS fixture (udp_batch, poll_overhead,
+conn_scale; UDP batch/single ratio 1.1080). Its `handshake_e2e`,
+`stream_throughput`, `datagram_batch` and `flush_cadence` rows are not
+comparable: the gate's baseline worktree has no copy of the ignored
+`tests/certs/{cert,key}.pem`, so those scenarios recorded placeholder rows
+(1 iteration, 1000 ops/s, zero latency). The two TLS scenarios this change
+touches were re-run once per side with identical copied fixtures and
+compared with `scripts/perf-gate.sh --baseline=... --current=...`:
+**0 FAIL, 2 WARN**.
+
+| scenario | variant | ops/s base | ops/s cur | delta% | p95 delta% | status |
+|---|---|---:|---:|---:|---:|---|
+| stream_throughput | 64B-c1 | 35.7 | 35.3 | -1.16% | -1.24% | PASS |
+| stream_throughput | 1KB-c1 | 36.4 | 35.2 | -3.32% | +4.99% | PASS |
+| stream_throughput | 64KB-c1 | 29.1 | 27.6 | -4.88% | +5.09% | PASS |
+| stream_throughput | 64B-c10 | 281.8 | 263.9 | -6.35% | +6.38% | PASS |
+| stream_throughput | 1KB-c10 | 266.8 | 264.4 | -0.88% | -0.06% | PASS |
+| stream_throughput | 1KB-c32-progress | 1992.5 | 1858.1 | -6.74% | +14.69% | WARN |
+| stream_throughput | 1KB-c100 | 569.4 | 773.8 | +35.90% | +17.09% | WARN |
+| flush_cadence | small_writes_1_stream | 78.6 | 82.0 | +4.32% | +1.57% | PASS |
+| flush_cadence | fanout_two_hop | 43.4 | 45.6 | +5.13% | -4.41% | PASS |
+| flush_cadence | burst_flush | 13.7 | 19.1 | +39.05% | -11.29% | PASS |
+| flush_cadence | sustained_writes | 84.8 | 84.0 | -0.93% | -1.43% | PASS |
+
+This is non-regression evidence from single rounds, not an integration
+throughput claim. A three-round integration capture with shared fixtures
+remains owed before release.

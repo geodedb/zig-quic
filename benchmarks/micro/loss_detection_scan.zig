@@ -8,9 +8,11 @@
 // linear scan over `sent_packets` on every ACK -- once to count unprocessed
 // entries (line ~290), once to either mark+classify (sequential or parallel
 // path), and once more via `compact()` after processing. Marking acked
-// packets is already O(K) via `sent_index` (AutoHashMap), but the loss
-// detection pass and the compaction pass are both O(N) where N is the
-// current `sent_packets` length. That cost is invisible when the list is
+// packets is O(K log N) by binary search over the pn-sorted list
+// (SONNY-6434 removed the `sent_index` hash), and for packets recorded in
+// send order loss detection walks only the lost prefix; out-of-order
+// recording falls back to the O(N) passes, N being the current
+// `sent_packets` length. That cost is invisible when the list is
 // small (today's hard-cap is 4096) but dominates when the cap is raised
 // or removed in favor of a bounded-but-larger data structure.
 //
@@ -21,7 +23,7 @@
 //
 // Methodology:
 //   1. Construct a Recovery instance with the bench allocator.
-//   2. Pre-populate `spaces[Application].sent` and `sent_index` with N
+//   2. Pre-populate `spaces[Application].sent` with N
 //      deterministic entries (sequential PNs 0..N, uniform 1200-byte
 //      payload, all ack_eliciting). We bypass the public `onPacketSent`
 //      for two reasons:
@@ -43,8 +45,8 @@
 //      [N/4 .. 3*N/4). This leaves N/4 head + N/4 tail as unacked so the
 //      post-ACK scan still has plenty of entries to traverse.
 //   5. Between iterations, reset the Application space and re-populate it
-//      -- `onAckReceivedWithEcn` consumes entries (marks acked, removes
-//      from sent_index, then compact() drops them), so repeating would
+//      -- `onAckReceivedWithEcn` consumes entries (marks them acked,
+//      then compaction drops them), so repeating would
 //      hit an empty list after iter 1. Repopulation cost is NOT timed;
 //      only the `onAckReceivedWithEcn` call is timed per iteration.
 //
@@ -85,7 +87,6 @@ fn repopulateApplicationSpace(recovery: *rec.Recovery, n: u64) !void {
     const space = &recovery.spaces[idx];
 
     space.sent.clearRetainingCapacity();
-    space.sent_index.clearRetainingCapacity();
     space.largest_acked = null;
     space.loss_time_ns = null;
 
@@ -94,7 +95,6 @@ fn repopulateApplicationSpace(recovery: *rec.Recovery, n: u64) !void {
     // the timed portion via allocator back-pressure even though the
     // repop itself is untimed).
     try space.sent.ensureTotalCapacity(space.allocator, n);
-    try space.sent_index.ensureTotalCapacity(@intCast(n));
 
     var i: u64 = 0;
     while (i < n) : (i += 1) {
@@ -108,7 +108,6 @@ fn repopulateApplicationSpace(recovery: *rec.Recovery, n: u64) !void {
             .size = PKT_SIZE,
             .ack_eliciting = true,
         });
-        try space.sent_index.put(i, @intCast(i));
     }
 }
 

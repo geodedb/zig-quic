@@ -769,19 +769,17 @@ test "sent_packets bounded at max_sent_packets (4096) after overflow" {
     const newest_retained = rec.spaces[space_idx].sent.items[sent_len - 1].pn;
     try testing.expectEqual(total_packets, newest_retained);
 
-    // Verify sent_index is consistent with sent list:
-    // Every entry in sent list that is not acked/lost must have a matching sent_index entry.
+    // Verify lookups are consistent with the sent list: every retained
+    // entry is sorted by packet number and found as in flight.
     for (rec.spaces[space_idx].sent.items, 0..) |sp, i| {
+        if (i > 0) try testing.expect(rec.spaces[space_idx].sent.items[i - 1].pn < sp.pn);
         if (!sp.acked and !sp.declared_lost) {
-            const idx_val = rec.spaces[space_idx].sent_index.get(sp.pn);
-            try testing.expect(idx_val != null);
-            try testing.expectEqual(i, idx_val.?);
+            try testing.expectEqual(recovery.Recovery.PacketDeliveryState.in_flight, rec.getPacketDeliveryState(.Application, sp.pn));
         }
     }
 
-    // The sent_index must not contain entries for dropped (oldest) packets.
-    // Packet 1 was dropped, so it must not be in the index.
-    try testing.expect(rec.spaces[space_idx].sent_index.get(1) == null);
+    // Dropped (oldest) packets are no longer tracked. Packet 1 was dropped.
+    try testing.expectEqual(recovery.Recovery.PacketDeliveryState.unknown, rec.getPacketDeliveryState(.Application, 1));
 }
 
 test "sent_packets cap retains newest packets across multiple overflow batches" {
@@ -816,12 +814,11 @@ test "sent_packets cap retains newest packets across multiple overflow batches" 
     const sent_items = rec.spaces[space_idx].sent.items;
     try testing.expectEqual(third_batch_end, sent_items[sent_items.len - 1].pn);
 
-    // Verify index consistency after multiple overflow cycles.
+    // Verify lookup consistency after multiple overflow cycles.
     for (sent_items, 0..) |sp, i| {
+        if (i > 0) try testing.expect(sent_items[i - 1].pn < sp.pn);
         if (!sp.acked and !sp.declared_lost) {
-            const idx_val = rec.spaces[space_idx].sent_index.get(sp.pn);
-            try testing.expect(idx_val != null);
-            try testing.expectEqual(i, idx_val.?);
+            try testing.expectEqual(recovery.Recovery.PacketDeliveryState.in_flight, rec.getPacketDeliveryState(.Application, sp.pn));
         }
     }
 }

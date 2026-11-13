@@ -977,6 +977,21 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "stream_lifecycle")) return;
 
+    // SONNY-6434: ACK processing must not scale with the packets sent
+    // (bulk-transfer stall). Keep this regression in the default test graph.
+    const test_ack_path_scaling = addTst(b, testlog_mod, compat_mod, "tests/test_ack_path_scaling.zig", target, optimize);
+    test_ack_path_scaling.root_module.addImport("quic_conn", quic_conn_mod);
+    test_ack_path_scaling.root_module.addImport("quic_packet", quic_packet_mod);
+    test_ack_path_scaling.root_module.addImport("quic_frame", quic_frame_mod);
+    test_ack_path_scaling.root_module.addImport("quic_recovery", quic_recovery_mod);
+    const run_test_ack_path_scaling = b.addRunArtifact(test_ack_path_scaling);
+    const ack_path_scaling_step = b.step("test-ack-path-scaling", "Test that ACK processing work is bounded independent of packets sent");
+    ack_path_scaling_step.dependOn(&run_test_ack_path_scaling.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "ack_path_scaling")) {
+        test_step.dependOn(&run_test_ack_path_scaling.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "ack_path_scaling")) return;
+
     // The native smoke lane exercises the same runtime helpers used by the
     // endpoint, recovery timers, Retry tokens, and non-FIPS crypto backend.
     const portable_runtime_test = addTst(b, testlog_mod, compat_mod, "tests/test_portable_runtime.zig", target, optimize);
