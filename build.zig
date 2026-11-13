@@ -642,6 +642,9 @@ pub fn build(b: *std.Build) void {
     endpoint_incoming_mod.addImport("config", quic_config_mod);
     endpoint_incoming_mod.addImport("frame_handler", endpoint_frame_handler_mod);
     endpoint_incoming_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
+    // SONNY-6457: endpoint_server_mod is also a test root (test-server-client-ca).
+    endpoint_server_mod.addImport("compat", compat_mod);
+    endpoint_server_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
 
     const quic_endpoint_mod = mkModule(b, "src/quic/endpoint.zig");
     quic_endpoint_mod.addImport("types", endpoint_types_mod);
@@ -991,6 +994,21 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_test_ack_path_scaling.step);
     }
     if (filter != null and std.mem.eql(u8, filter.?, "ack_path_scaling")) return;
+
+    // SONNY-6457: the server's client CA list reaches the TLS context of every
+    // server connection. Keep this regression in the default test graph.
+    const test_server_client_ca = addTst(b, testlog_mod, compat_mod, "tests/test_server_client_ca.zig", target, optimize);
+    test_server_client_ca.root_module.addImport("server", endpoint_server_mod);
+    test_server_client_ca.root_module.addImport("quic_conn", quic_conn_mod);
+    test_server_client_ca.root_module.addImport("quic_packet", quic_packet_mod);
+    test_server_client_ca.root_module.addImport("quic_config", quic_config_mod);
+    const run_test_server_client_ca = b.addRunArtifact(test_server_client_ca);
+    const server_client_ca_step = b.step("test-server-client-ca", "Test that a server's client CA list reaches its TLS contexts (mTLS)");
+    server_client_ca_step.dependOn(&run_test_server_client_ca.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "server_client_ca")) {
+        test_step.dependOn(&run_test_server_client_ca.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "server_client_ca")) return;
 
     // The native smoke lane exercises the same runtime helpers used by the
     // endpoint, recovery timers, Retry tokens, and non-FIPS crypto backend.

@@ -1,6 +1,6 @@
 .{
     .name = .quic,
-    .version = "0.1.49",
+    .version = "0.1.50",
     .fingerprint = 0xc0795252512a1280,
     .minimum_zig_version = "0.16.0",
     .paths = .{
@@ -38,8 +38,8 @@
         //       .hash = "<seam-enabled-tls-hash>",
         //   },
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.24#9518ef9fa5f2718c523ddccc04d4b68ff8bcb620",
-            .hash = "tls-0.1.24-mtEaLGHFKgC0dE9AXYJJTmRdEwJbG2kcznZmGQbPyrut",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.27#88385950df409da0a78e428afdb095863bd708d8",
+            .hash = "tls-0.1.27-mtEaLO0yKwBm6cVfv96YtQ9rCLGTAanoxE_gDeOGr7NZ",
         },
         // Thread pool for parallel operations
         .thread_pool = .{

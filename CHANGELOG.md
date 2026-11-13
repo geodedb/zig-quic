@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.50] - 2026-11-13
+
+### Changed
+
+- tls v0.1.27 (client chain completion from configured CAs; a double free on a failed client CertificateVerify is fixed; RFC 8446 exporter and HkdfLabel sizes) (SONNY-6457).
+
+### Added
+
+- `QuicConfig.inline_client_ca_der`: the DER CA certificates a server trusts for client certificates (mTLS). Every server connection hands them to its TLS context as `trusted_ca_der`, so only those CAs are trusted for client certificates and, with a tls release that completes client chains, a client that sends only its leaf is verified against them. The server used to pass no anchors, leaving client-certificate validation to the process-global trust store (SONNY-6457).
+
 ## [0.1.49] - 2026-11-12
 
 ### Fixed

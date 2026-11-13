@@ -526,6 +526,7 @@ pub fn prepareInitialConnection(
             .aead_confidentiality_limit = ctx.cfg.aead_confidentiality_limit_override orelse 0,
             .aead_integrity_limit = ctx.cfg.aead_integrity_limit_override orelse 0,
             .require_client_cert = ctx.cfg.require_client_cert,
+            .client_ca_der = ctx.cfg.inline_client_ca_der,
             .exempt_localhost = ctx.cfg.exempt_localhost,
         };
 

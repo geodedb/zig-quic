@@ -294,6 +294,10 @@ pub const ServerConnectionConfig = struct {
     aead_integrity_limit: u64 = 0,
     /// Require client certificate authentication (mTLS)
     require_client_cert: bool = false,
+    /// DER CA certificates trusted for client certificates (mTLS), handed to
+    /// the TLS context as its trust anchors (SONNY-6457). null: the
+    /// process-global trust store.
+    client_ca_der: ?[]const []const u8 = null,
     /// Exempt localhost from anti-amplification / address validation (#124)
     exempt_localhost: bool = true,
 };
@@ -438,7 +442,7 @@ pub fn createServerConnection(
         config.require_client_cert,
         null, // Server doesn't need client cert/key
         null,
-        null, // Server has no client-side trust anchors (GAP-0838 is client→server)
+        config.client_ca_der, // SONNY-6457: anchors for client certificates (mTLS)
     );
     // Owns heap internals (ArrayLists, cert/ALPN buffers). Until ownership
     // transfers into the heap-allocated tls_ctx below, a failure of
