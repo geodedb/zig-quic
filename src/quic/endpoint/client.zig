@@ -106,6 +106,12 @@ pub fn createClientConnection(
 ) !*conn_mod.Connection {
     const c = try allocator.*.create(conn_mod.Connection);
     c.init(allocator, .Client, sockToIsize(sock_fd), peer);
+    // Every failure below happens before or while registering: free the
+    // connection (it used to leak if CID generation failed).
+    errdefer {
+        c.deinit();
+        allocator.*.destroy(c);
+    }
 
     // Apply config flags
     c.setUseCubic(cfg.cc == .cubic);
@@ -158,15 +164,9 @@ pub fn createClientConnection(
         .peer_hash = peer_hash,
         .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]),
     };
-    conns_map.put(key_d, c) catch {
-        c.deinit();
-        allocator.*.destroy(c);
-        return error.OutOfMemory;
-    };
+    conns_map.put(key_d, c) catch return error.OutOfMemory;
     conns_map.put(key_s, c) catch {
         _ = conns_map.remove(key_d);
-        c.deinit();
-        allocator.*.destroy(c);
         return error.OutOfMemory;
     };
 

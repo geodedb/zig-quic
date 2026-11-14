@@ -20,7 +20,15 @@ pub const LossDetector = struct {
         return largest_acked - pn >= self.packet_threshold;
     }
 
-    /// Time threshold as 1.125x of the larger of smoothed/latest RTT.
+    /// RFC 9002 §6.1.2 kGranularity: the time threshold never drops below
+    /// the timer granularity (1 ms).
+    pub const k_granularity_ns: u64 = 1_000_000;
+
+    /// Time threshold: 9/8 of the larger of smoothed/latest RTT, but at
+    /// least kGranularity. Without the floor a sub-millisecond RTT (loopback,
+    /// a LAN) declared packets lost by time while their ACK was still on its
+    /// way, and every such loss resent data and shrank the window
+    /// (SONNY-6454).
     /// RFC 9002 §6.1.2: Time Threshold
     pub fn timeThresholdNs(smoothed_rtt_ns: u64, latest_rtt_ns: u64) u64 {
         const std = @import("std");
@@ -30,7 +38,7 @@ pub const LossDetector = struct {
         if (base > std.math.maxInt(u64) - increment) {
             return std.math.maxInt(u64);
         }
-        return base + increment; // 1.125x
+        return @max(base + increment, k_granularity_ns); // 1.125x
     }
 };
 

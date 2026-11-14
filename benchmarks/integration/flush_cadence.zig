@@ -79,6 +79,16 @@
 //   gate on this ratio (follow-up) will catch both improvement wins
 //   and future regressions.
 
+// Client polling (SONNY-6486): the client used to wait in pollWithStats(1)
+// between writes and echoes, so each echo also paid the time for the
+// client thread to wake from the poll wait. Up to quic v0.1.50 the
+// endpoints answered each other's ACK-only packets with ACKs forever
+// (fixed by SONNY-6478), which kept the client socket busy so the thread
+// never slept: burst_flush measured ~14.5 bursts/s with that traffic and
+// ~10.9 without it, the difference being thread wake-up, not the send path.
+// The client now polls without sleeping (pollWithStats(0)), as the echo
+// server already did, so the numbers measure the library alone.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("bench_common");
@@ -263,7 +273,8 @@ fn sendChunk(
             return err;
         };
         if (n == 0) {
-            _ = ep.pollWithStats(1) catch {};
+            // No sleep in the poll: see "Client polling" above.
+            _ = ep.pollWithStats(0) catch {};
             continue;
         }
         sent += n;
@@ -284,7 +295,8 @@ fn recvExact(
     var got: usize = 0;
     while (got < want) {
         if (common.nowNs() >= deadline_ns) return error.Timeout;
-        _ = ep.pollWithStats(1) catch {};
+        // No sleep in the poll: see "Client polling" above.
+        _ = ep.pollWithStats(0) catch {};
         const take = @min(scratch.len, want - got);
         const n = api.readStream(conn, sid, scratch[0..take]) catch |err| {
             if (err == error.WouldBlock) continue;

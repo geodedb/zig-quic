@@ -254,6 +254,17 @@ mode_paired_commit() {
     log "creating worktree $worktree at $short_sha"
     git worktree add --detach "$worktree" "$sha" >/dev/null
 
+    # The TLS integration benches load tests/certs/{cert,key}.pem, which are
+    # generated locally and git-ignored, so a fresh worktree lacks them and
+    # every TLS row of the baseline compared against a placeholder
+    # (SONNY-6454). Give the baseline the same certificates as HEAD.
+    local cert
+    for cert in "$PROJECT_ROOT"/tests/certs/*.pem; do
+        [[ -f "$cert" ]] || continue
+        mkdir -p "$worktree/tests/certs"
+        [[ -e "$worktree/tests/certs/${cert##*/}" ]] || cp "$cert" "$worktree/tests/certs/"
+    done
+
     if [[ "$suite" == "micro" || "$suite" == micro/* ]] \
         && has_isolated_bench "$PROJECT_ROOT" && has_isolated_bench "$worktree"; then
         BENCH_STEP="bench-isolated"

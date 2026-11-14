@@ -146,9 +146,12 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 | NEWGAP-04 | Medium | conformance | Unknown/malformed frames in Initial space silently dropped instead of FRAME_ENCODING_ERROR | `src/quic/endpoint/incoming.zig` | RFC 9000 §12.4 | **Fixed** (commit `2047925`) |
 | NEWGAP-05 | Medium | missing-feature | Server `preferred_address` parsed to raw bytes only; never structurally parsed or migrated to | `src/quic/transport_params.zig` | RFC 9000 §9.6 | **Open** |
 | NEWGAP-06 | Medium | conformance | ECN validation failure does not disable ECN for the path; no ECT-acked vs counter cross-check | `src/quic/recovery/recovery.zig` | RFC 9000 §13.4.2.1 | **Open** |
-| NEWGAP-07 | Low | missing-feature | Reactive MAX_STREAMS on STREAMS_BLOCKED is log-only despite GAP-0003/#86 marked resolved | `src/quic/endpoint/frame_handler.zig` | RFC 9000 §4.6, §19.14 | **Open** |
+| NEWGAP-07 | Low | missing-feature | Reactive MAX_STREAMS on STREAMS_BLOCKED is log-only despite GAP-0003/#86 marked resolved | `src/quic/endpoint/frame_handler.zig` | RFC 9000 §4.6, §19.14 | **Fixed** (SONNY-6478) |
 | NEWGAP-08 | Low | missing-feature | Server never issues NEW_TOKEN for future address validation | (absent) | RFC 9000 §8.1.3 | **Open** |
 | NEWGAP-09 | Low | conformance/code-quality | `pto.zig` `.PtoApp` branch returns "not implemented"; dead module diverges from the live app-PTO path | `src/quic/endpoint/pto.zig` | RFC 9002 §6.2.4 | **Open** |
+| NEWGAP-10 | Medium | conformance | Initial/Handshake PTO fires on every 100 ms timer wake-up regardless of its deadline, and each firing raises the backoff shared with application data | `src/quic/connection/methods_b.zig`, `src/quic/endpoint.zig` | RFC 9002 §6.2.1 | **Fixed** (v0.1.51) |
+| NEWGAP-11 | Medium | conformance | The client takes no RTT sample during the handshake: the server acknowledges its Initial and Handshake packets in separate ACK-only packets that the client never processes | `src/quic/endpoint/incoming.zig`, `src/quic/endpoint/incoming/module_b.zig` | RFC 9002 §5.1 | **Open** |
+| NEWGAP-12 | High | liveness | Under heavy loss a long transfer can stall for good: key-phase desync, PTO probes never received by the connection, accepted connection never reaching `tryAccept` | `src/quic/endpoint/incoming/module_b.zig`, `src/quic/connection/methods_b.zig`, `src/quic/endpoint.zig` | RFC 9001 §6, RFC 9002 §6.2 | **Open** |
 
 ### NEWGAP-01: Received CID transport parameters not authenticated against on-wire CIDs
 
@@ -205,7 +208,7 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 - **Category:** missing-feature
 - **RFC:** RFC 9000 §4.6, §19.14
 - **Location:** `src/quic/endpoint/frame_handler.zig`
-- **Status:** **Open**. Reactive MAX_STREAMS issuance on STREAMS_BLOCKED is log-only despite GAP-0003/#86 being marked resolved. Either implement the reactive grant or correct the GAP-0003 resolution note (tracking-accuracy issue).
+- **Status:** **Fixed** (SONNY-6478). Completed streams are retired (`src/quic/connection/stream_retire.zig`) and each retired peer-initiated stream returns one unit of stream-count credit. MAX_STREAMS goes out once half the initial limit has been returned, with other flow-control frames, and immediately on STREAMS_BLOCKED. Covered by `zig build test-stream-retirement`.
 
 ### NEWGAP-08: Server never issues NEW_TOKEN for future address validation
 
@@ -222,6 +225,35 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 - **RFC:** RFC 9002 §6.2.4
 - **Location:** `src/quic/endpoint/pto.zig`
 - **Status:** **Open**. The `.PtoApp` branch returns "not implemented" and the dead module diverges from the live app-PTO path. App PTO IS sent via `connection/methods_b.sendPtoProbeApp`; either implement or delete the dead `pto.zig` branch to avoid a maintainer trap.
+
+### NEWGAP-10: handshake-space PTO ignores its deadline
+
+- **Severity:** Medium
+- **Category:** conformance
+- **RFC:** RFC 9002 §6.2.1
+- **Location:** `src/quic/connection/methods_b.zig` (`computeAndMaybeArmPtoInitial`, `computeAndMaybeArmPtoHandshake`), `src/quic/endpoint.zig` (`processExpiredTimers`)
+- **Status:** **Fixed** (v0.1.51, found with SONNY-6478). The Initial and Handshake PTO timers wake at least every 100 ms and sent a probe on every wake-up without checking the backed-off deadline. A slow handshake on a starved machine therefore probed about ten times a second, and each probe raised `rec.pto_count`, which the application space shares: the high-parallel clients reached 240 and their application PTO deadline saturated. An expiry now probes only once `Connection.handshakePtoDue` reports the deadline has passed; an early wake-up re-arms the timer, as `appPtoDue` does for the application space. Covered by `zig build test-tail-loss-pto` ("Initial PTO probes follow the backed-off RFC 9002 deadline": 3 Initial packets in 1.5 s, previously 29).
+
+### NEWGAP-11: no RTT sample from the handshake on the client
+
+- **Severity:** Medium
+- **Category:** conformance
+- **RFC:** RFC 9002 §5.1, §6.2.2
+- **Location:** `src/quic/endpoint/incoming.zig` (`processInitial` ACK reply), `src/quic/endpoint/incoming/module_b.zig` (Handshake ACK reply)
+- **Status:** **Open** (found with SONNY-6478, v0.1.51). The server acknowledges the client's Initial and Handshake packets in separate ACK-only packets sent after its own flight. A trace showed the client never processes an Initial or Handshake ACK (probably because they arrive after it has dropped those keys), so it confirms the handshake without an RTT sample. Its first application PTO then uses the 333 ms initial RTT, which is about 1 s (RFC 9002 §6.2.2), not a few milliseconds: on loopback, a lost first request is resent after about 1 s (`zig build test-tail-loss-pto`, "a lost request"). Fix: bundle the ACK in the server's first Initial and Handshake packets, as RFC 9000 §13.2.1 encourages.
+
+### NEWGAP-12: long transfers can stall under heavy loss
+
+- **Severity:** High
+- **Category:** liveness
+- **RFC:** RFC 9001 §6 (key update), RFC 9002 §6.2 (PTO)
+- **Location:** `src/quic/endpoint/incoming/module_b.zig` (key promotion, 16-packet old-key window), `src/quic/connection/methods_b.zig` (`maybeTriggerKeyUpdateOnSend`, every 512 packets or 1 MiB), `src/quic/endpoint.zig` (accept queue)
+- **Status:** **Open** (found with SONNY-6478, v0.1.51). On 2 CPUs shared with 16 busy loops, `zig build test-large-stream-flow-control` stalls in 1/20 (ReleaseSafe) to 10/20 (Debug) runs, and the lossy-loopback MAX_STREAM_DATA test in 1–2/20, with tens of thousands of receive-buffer drops. The failure report (`reportStall`) showed three distinct mechanisms, none in code this release changed:
+  1. **Key-phase desync.** The client sends with key phase 1 while the server is at receive phase 0. The server decrypts none of the client's last ~5,500 packets, so nothing is acknowledged again.
+  2. **Probes never reach the connection,** with no key update involved. After a 391-packet burst was lost, six consecutive client PTO probes produced no ACK, and the server's largest received packet number did not move, although the server was idle and polling every millisecond.
+  3. **Accepted connection never handed to the application.** The server acknowledged every client packet, but `tryAccept` never returned the connection, so no data was read (16 MiB test, 0 bytes delivered).
+
+  These tests could not reach this regime before v0.1.51 (a stream beyond its receive window crawled, SONNY-6475), and the application PTO used to fire every 100 ms, which masked slow recovery. Disabling automatic key updates did not remove the stalls (1 in 9 runs still stalled), so mechanism 1 is not the only cause. Each needs its own investigation; the failure report in the test prints the state needed to tell them apart.
 
 ### Second-pass additions
 

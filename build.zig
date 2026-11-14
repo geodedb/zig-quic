@@ -1010,6 +1010,146 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "server_client_ca")) return;
 
+    // SONNY-6478: completed request/response streams on one long-lived
+    // connection must be retired, must not be resent once acknowledged, and
+    // must return stream-count credit. Keep this regression in the default
+    // test graph.
+    const test_stream_retirement = addTst(b, testlog_mod, compat_mod, "tests/test_stream_retirement.zig", target, optimize);
+    test_stream_retirement.root_module.addImport("quic_api", quic_api_mod);
+    test_stream_retirement.root_module.addImport("quic_config", quic_config_mod);
+    test_stream_retirement.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_stream_retirement.root_module.addImport("test_certs", test_certs_mod);
+    test_stream_retirement.root_module.addImport("quic_build_options", build_options_mod);
+    test_stream_retirement.root_module.addImport("quic_conn", quic_conn_mod);
+    const run_test_stream_retirement = b.addRunArtifact(test_stream_retirement);
+    const stream_retirement_step = b.step("test-stream-retirement", "Test that completed streams are retired and never resent on a long-lived connection");
+    stream_retirement_step.dependOn(&run_test_stream_retirement.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "stream_retirement")) {
+        test_step.dependOn(&run_test_stream_retirement.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "stream_retirement")) return;
+
+    // SONNY-6475: a single stream carrying more than the receive window must
+    // keep flowing. Keep this regression in the default test graph.
+    const test_large_stream_fc = addTst(b, testlog_mod, compat_mod, "tests/test_large_stream_flow_control.zig", target, optimize);
+    test_large_stream_fc.root_module.addImport("quic_api", quic_api_mod);
+    test_large_stream_fc.root_module.addImport("quic_config", quic_config_mod);
+    test_large_stream_fc.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_large_stream_fc.root_module.addImport("test_certs", test_certs_mod);
+    test_large_stream_fc.root_module.addImport("quic_build_options", build_options_mod);
+    test_large_stream_fc.root_module.addImport("quic_conn", quic_conn_mod);
+    const run_test_large_stream_fc = b.addRunArtifact(test_large_stream_fc);
+    const large_stream_fc_step = b.step("test-large-stream-flow-control", "Test that one stream carries more than the receive window at full speed");
+    large_stream_fc_step.dependOn(&run_test_large_stream_fc.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "large_stream_flow_control")) {
+        test_step.dependOn(&run_test_large_stream_fc.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "large_stream_flow_control")) return;
+
+    // SONNY-6454: loss detection and persistent congestion per RFC 9002.
+    const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
+    test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);
+    const run_test_recovery_conformance = b.addRunArtifact(test_recovery_conformance);
+    const recovery_conformance_step = b.step("test-recovery-rfc9002-conformance", "Test loss detection and persistent congestion against RFC 9002");
+    recovery_conformance_step.dependOn(&run_test_recovery_conformance.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "recovery_rfc9002_conformance")) {
+        test_step.dependOn(&run_test_recovery_conformance.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "recovery_rfc9002_conformance")) return;
+
+    // SONNY-6486: final-size violations from a hostile peer (RFC 9000 §4.5).
+    const test_final_size = addTst(b, testlog_mod, compat_mod, "tests/test_final_size.zig", target, optimize);
+    test_final_size.root_module.addImport("quic_conn", quic_conn_mod);
+    test_final_size.root_module.addImport("quic_frame", quic_frame_mod);
+    test_final_size.root_module.addImport("quic_packet", quic_packet_mod);
+    test_final_size.root_module.addImport("frame_handler", endpoint_frame_handler_mod);
+    test_final_size.root_module.addImport("quic_config", quic_config_mod);
+    const run_test_final_size = b.addRunArtifact(test_final_size);
+    const final_size_step = b.step("test-final-size", "Test RFC 9000 final-size violations from a hostile peer");
+    final_size_step.dependOn(&run_test_final_size.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "final_size")) {
+        test_step.dependOn(&run_test_final_size.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "final_size")) return;
+
+    // SONNY-6486: lost flow-control and RESET_STREAM frames are sent again
+    // (RFC 9000 §13.3).
+    const test_ctrl_retx = addTst(b, testlog_mod, compat_mod, "tests/test_control_frame_retransmission.zig", target, optimize);
+    test_ctrl_retx.root_module.addImport("quic_conn", quic_conn_mod);
+    test_ctrl_retx.root_module.addImport("quic_frame", quic_frame_mod);
+    test_ctrl_retx.root_module.addImport("quic_packet", quic_packet_mod);
+    test_ctrl_retx.root_module.addImport("quic_api", quic_api_mod);
+    test_ctrl_retx.root_module.addImport("quic_config", quic_config_mod);
+    test_ctrl_retx.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_ctrl_retx.root_module.addImport("test_certs", test_certs_mod);
+    test_ctrl_retx.root_module.addImport("quic_build_options", build_options_mod);
+    const run_test_ctrl_retx = b.addRunArtifact(test_ctrl_retx);
+    const ctrl_retx_step = b.step("test-control-frame-retransmission", "Test that lost MAX_* and RESET_STREAM frames are sent again");
+    ctrl_retx_step.dependOn(&run_test_ctrl_retx.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "control_frame_retransmission")) {
+        test_step.dependOn(&run_test_ctrl_retx.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "control_frame_retransmission")) return;
+
+    const test_tail_loss = addTst(b, testlog_mod, compat_mod, "tests/test_tail_loss_pto.zig", target, optimize);
+    test_tail_loss.root_module.addImport("quic_conn", quic_conn_mod);
+    test_tail_loss.root_module.addImport("quic_frame", quic_frame_mod);
+    test_tail_loss.root_module.addImport("quic_packet", quic_packet_mod);
+    test_tail_loss.root_module.addImport("quic_api", quic_api_mod);
+    test_tail_loss.root_module.addImport("quic_config", quic_config_mod);
+    test_tail_loss.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_tail_loss.root_module.addImport("test_certs", test_certs_mod);
+    test_tail_loss.root_module.addImport("quic_build_options", build_options_mod);
+    const run_test_tail_loss = b.addRunArtifact(test_tail_loss);
+    const tail_loss_step = b.step("test-tail-loss-pto", "Test that lost tail packets (no later ACK) are recovered by the PTO probe");
+    tail_loss_step.dependOn(&run_test_tail_loss.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "tail_loss_pto")) {
+        test_step.dependOn(&run_test_tail_loss.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "tail_loss_pto")) return;
+
+    // SONNY-6486: STREAM_DATA_BLOCKED is ack-eliciting; ACK delay uses our
+    // own exponent.
+    const test_ack_frame_conf = addTst(b, testlog_mod, compat_mod, "tests/test_ack_frame_conformance.zig", target, optimize);
+    test_ack_frame_conf.root_module.addImport("quic_conn", quic_conn_mod);
+    test_ack_frame_conf.root_module.addImport("quic_frame", quic_frame_mod);
+    test_ack_frame_conf.root_module.addImport("quic_packet", quic_packet_mod);
+    test_ack_frame_conf.root_module.addImport("frame_handler", endpoint_frame_handler_mod);
+    test_ack_frame_conf.root_module.addImport("quic_config", quic_config_mod);
+    test_ack_frame_conf.root_module.addImport("handshake_integration", endpoint_handshake_integration_mod);
+    test_ack_frame_conf.root_module.addImport("quic_transport_params", quic_transport_params_mod);
+    const run_test_ack_frame_conf = b.addRunArtifact(test_ack_frame_conf);
+    const ack_frame_conf_step = b.step("test-ack-frame-conformance", "Test STREAM_DATA_BLOCKED acknowledgement and ACK delay encoding");
+    ack_frame_conf_step.dependOn(&run_test_ack_frame_conf.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "ack_frame_conformance")) {
+        test_step.dependOn(&run_test_ack_frame_conf.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "ack_frame_conformance")) return;
+
+    // A failed connect must leave no connection registered with the endpoint.
+    const test_connect_failure = addTst(b, testlog_mod, compat_mod, "tests/test_connect_failure.zig", target, optimize);
+    test_connect_failure.root_module.addImport("quic_api", quic_api_mod);
+    test_connect_failure.root_module.addImport("quic_config", quic_config_mod);
+    test_connect_failure.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    const run_test_connect_failure = b.addRunArtifact(test_connect_failure);
+    const connect_failure_step = b.step("test-connect-failure", "Test that failed dials leave the endpoint consistent");
+    connect_failure_step.dependOn(&run_test_connect_failure.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "connect_failure")) {
+        test_step.dependOn(&run_test_connect_failure.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "connect_failure")) return;
+
+    // PEM parsing: no leak on malformed base64, key scratch zeroed.
+    const test_pem = addTst(b, testlog_mod, compat_mod, "tests/test_pem.zig", target, optimize);
+    test_pem.root_module.addImport("quic_api", quic_api_mod);
+    const run_test_pem = b.addRunArtifact(test_pem);
+    const pem_step = b.step("test-pem", "Test PEM parsing failure paths and key zeroing");
+    pem_step.dependOn(&run_test_pem.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "pem")) {
+        test_step.dependOn(&run_test_pem.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "pem")) return;
+
     // The native smoke lane exercises the same runtime helpers used by the
     // endpoint, recovery timers, Retry tokens, and non-FIPS crypto backend.
     const portable_runtime_test = addTst(b, testlog_mod, compat_mod, "tests/test_portable_runtime.zig", target, optimize);

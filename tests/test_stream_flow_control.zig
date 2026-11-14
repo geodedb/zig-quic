@@ -310,9 +310,9 @@ test "receive-side flow control bounds out-of-order buffering (QC-01)" {
     }
 }
 
-test "reset_stream rx trims buffered beyond final_size and finishes" {
+test "reset_stream rx below buffered data is FINAL_SIZE_ERROR; a consistent reset finishes" {
     var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer std.testing.expect(gpa.deinit() == .ok) catch @panic("leak or invalid free");
     var A = gpa.allocator();
 
     var c = makeConn(&A);
@@ -324,9 +324,15 @@ test "reset_stream rx trims buffered beyond final_size and finishes" {
     @memset(seg, 'X');
     try c.pushStreamFrame(0, 5, seg, false); // offset 5, will not drain (recv_off=0)
 
-    // Now deliver a RESET_STREAM with final_size=3
-    try c.handleResetStream(0, 999, 3);
+    // A RESET_STREAM with final_size=3 contradicts bytes [5, 9) already
+    // received: FINAL_SIZE_ERROR (RFC 9000 §4.5). This used to be accepted,
+    // trimming the buffered segment in place and freeing it with the wrong
+    // length (SONNY-6486). Nothing changes.
+    try std.testing.expectError(error.FinalSizeError, c.handleResetStream(0, 999, 3));
+    try std.testing.expect(!c.stream_recv_aborted);
 
+    // A reset at the highest received offset is consistent.
+    try c.handleResetStream(0, 999, 9);
     try std.testing.expect(c.stream_recv_aborted);
     try std.testing.expect(c.stream_recv_fin);
 
@@ -338,14 +344,15 @@ test "reset_stream rx trims buffered beyond final_size and finishes" {
     };
     try std.testing.expectEqual(@as(usize, 0), n);
 
-    // Further STREAM data must be ignored after reset
-    const more = try A.alloc(u8, 10);
+    // Further STREAM data within the final size is ignored after reset...
+    const more = try A.alloc(u8, 9);
     defer A.free(more);
     @memset(more, 'Y');
-    // pushStreamFrame returns error? It returns !void; our implementation early-returns when aborted.
     try c.pushStreamFrame(0, 0, more, false);
     const n2 = c.readStream(0, &tmp) catch 0;
     try std.testing.expectEqual(@as(usize, 0), n2);
+    // ...and data past it is FINAL_SIZE_ERROR.
+    try std.testing.expectError(error.FinalSizeError, c.pushStreamFrame(0, 9, "Z", false));
 }
 
 test "teardownStream clears RX state and flags allowing reopen" {
@@ -364,10 +371,11 @@ test "teardownStream clears RX state and flags allowing reopen" {
     // Teardown
     c.teardownStream(0);
 
-    // Reading now should report InvalidStream
+    // The stream is retired: its state is gone and reads report the end of
+    // the stream, as for a stream retired after finishing (SONNY-6478).
     var buf: [8]u8 = undefined;
-    const err = c.readStream(0, &buf) catch |e| e;
-    try std.testing.expect(err == error.InvalidStream);
+    try std.testing.expect(!c.streams_rx.contains(0));
+    try std.testing.expectEqual(@as(usize, 0), try c.readStream(0, &buf));
 
     // Flags reset and counters cleared for stream 0
     try std.testing.expect(!c.stream_opened);

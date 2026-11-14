@@ -41,6 +41,15 @@ fn closeFrameEncodingError(ctx: *FrameContext) FrameResult {
 }
 
 /// Close the connection with STREAM_STATE_ERROR (0x05) and report the close.
+/// Close the connection with a transport error code and report the close.
+fn closeWithError(ctx: *FrameContext, code: u64, reason: []const u8) FrameResult {
+    ctx.conn.sendConnectionClose(code, reason) catch |err| {
+        logger.debugPrint("Failed to send CONNECTION_CLOSE ({s}): {}\n", .{ reason, err });
+        ctx.conn.markClosed();
+    };
+    return .{ .saw_close = true };
+}
+
 fn closeStreamStateError(ctx: *FrameContext) FrameResult {
     ctx.conn.sendConnectionClose(0x05, "STREAM_STATE_ERROR") catch |err| {
         logger.debugPrint("Failed to send CONNECTION_CLOSE (STREAM_STATE_ERROR): {}\n", .{err});
@@ -179,6 +188,10 @@ pub fn handleStream(
             };
             return .{ .saw_close = true };
         }
+        // RFC 9000 §4.5 / §4.6 (SONNY-6486): these used to drop the packet
+        // without an ACK or a close.
+        if (err == error.FinalSizeError) return closeWithError(ctx, 0x06, "FINAL_SIZE_ERROR");
+        if (err == error.StreamLimitExceeded) return closeWithError(ctx, 0x04, "STREAM_LIMIT_ERROR");
         return err;
     };
     logger.debugPrint("pushStreamFrame returned successfully\n", .{});
@@ -359,6 +372,9 @@ pub fn handleMaxStreamData(
         if (isPeerInitiatedUniStream(ctx.conn, m.stream_id)) {
             return closeStreamStateError(ctx);
         }
+        // Credit for a retired stream is moot; do not recreate its state
+        // (SONNY-6478).
+        if (ctx.conn.isStreamRetired(m.stream_id)) return .{ .saw_ack_eliciting = true };
         // QC-05: bound pre-created TX state so a peer cannot grow stream_txs
         // without limit by advertising windows for streams we will never open.
         if (ctx.conn.stream_txs.count() >= max_pre_created_stream_tx) {
@@ -461,13 +477,18 @@ pub fn handleDataBlocked(ctx: *FrameContext, db: frame.DataBlocked) FrameResult 
 /// that it has data to send but is unable to do so due to stream-level
 /// flow control."
 ///
-/// NOTE: This implementation currently ignores STREAM_DATA_BLOCKED.
-/// Future enhancement: Could trigger proactive MAX_STREAM_DATA increase.
+/// The frame is ack-eliciting (RFC 9002 §2). It used to be ignored and
+/// never acknowledged, so a blocked sender whose last data packets were
+/// lost got no ACK that could reveal the loss (SONNY-6486). A frame for a
+/// stream we cannot receive on is STREAM_STATE_ERROR (§19.13); otherwise any
+/// credit the peer has not seen is sent again.
 pub fn handleStreamDataBlocked(ctx: *FrameContext, sdb: frame.StreamDataBlocked) FrameResult {
-    _ = ctx;
-    _ = sdb;
-    // No action taken - informational only
-    return .{ .saw_ack_eliciting = false };
+    const is_uni = (sdb.stream_id & 0x2) != 0;
+    if (is_uni and !ctx.conn.isPeerInitiatedStream(sdb.stream_id)) return closeStreamStateError(ctx);
+    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+    ctx.conn.onStreamDataBlocked(sdb.stream_id, sdb.limit);
+    return .{ .saw_ack_eliciting = true };
 }
 
 /// Handle PATH_CHALLENGE frame (RFC 9000 §19.17).
@@ -555,6 +576,7 @@ pub fn handleNewToken(
 /// We respond by marking our TX as aborted and sending RESET_STREAM.
 fn handleStopSending(ctx: *FrameContext, ss: frame.StopSending) FrameResult {
     ctx.conn.handleStopSending(ss.stream_id, ss.error_code) catch |err| {
+        if (err == error.StreamStateError) return closeStreamStateError(ctx);
         logger.warn("handleStopSending failed for stream {d}: {s}", .{ ss.stream_id, @errorName(err) });
     };
     return .{ .saw_ack_eliciting = true };
@@ -568,13 +590,10 @@ fn handleResetStreamFrame(ctx: *FrameContext, rs: frame.ResetStream) FrameResult
     // RFC 9000 §4.5 (NEW-SEC-02): an inconsistent RESET_STREAM final size is a
     // FINAL_SIZE_ERROR (0x06).
     ctx.conn.handleResetStream(rs.stream_id, rs.error_code, rs.final_size) catch |err| switch (err) {
-        error.FinalSizeError => {
-            ctx.conn.sendConnectionClose(0x06, "FINAL_SIZE_ERROR") catch |close_err| {
-                logger.debugPrint("Failed to send CONNECTION_CLOSE (FINAL_SIZE_ERROR): {}\n", .{close_err});
-                ctx.conn.markClosed();
-            };
-            return .{ .saw_close = true };
-        },
+        error.FinalSizeError => return closeWithError(ctx, 0x06, "FINAL_SIZE_ERROR"),
+        error.FlowControlError => return closeWithError(ctx, 0x03, "FLOW_CONTROL_ERROR"),
+        error.StreamLimitExceeded => return closeWithError(ctx, 0x04, "STREAM_LIMIT_ERROR"),
+        error.StreamStateError => return closeStreamStateError(ctx),
     };
     return .{ .saw_ack_eliciting = true };
 }
@@ -612,16 +631,13 @@ pub fn processFrame(ctx: *FrameContext, fr: frame.Frame) !FrameResult {
         // RFC 9000 §19.4: RESET_STREAM aborts the sending part of a stream.
         .stop_sending => |ss| handleStopSending(ctx, ss),
         .reset_stream => |rs| handleResetStreamFrame(ctx, rs),
-        .streams_blocked_bidi => |sb| {
-            // RFC 9000 S19.14: Peer has reached stream limit.
-            // Log for observability; reactive MAX_STREAMS increase deferred to #25.
-            _ = sb;
-            return .{ .saw_ack_eliciting = true };
-        },
-        .streams_blocked_uni => |su| {
-            // RFC 9000 S19.14: Peer has reached stream limit.
-            // Log for observability; reactive MAX_STREAMS increase deferred to #25.
-            _ = su;
+        .streams_blocked_bidi, .streams_blocked_uni => {
+            // RFC 9000 §19.14: the peer has reached its stream limit. Send any
+            // credit returned by retired streams now rather than waiting for
+            // the batch threshold (SONNY-6478).
+            ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            ctx.conn.maybeSendMaxStreams(true);
             return .{ .saw_ack_eliciting = true };
         },
         // PADDING (RFC 9000 §19.1): no-op by definition.

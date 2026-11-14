@@ -434,6 +434,7 @@ pub fn generateAndSendAck(
 
                     var sent_max_data: ?u64 = null;
                     var sent_max_streams_bidi: ?u64 = null;
+                    var sent_max_streams_uni: ?u64 = null;
                     const pending_new_cid_before = conn.pending_new_cid;
 
                     if (conn.local_max_data > conn.last_sent_max_data) {
@@ -448,6 +449,12 @@ pub fn generateAndSendAck(
                             logger.err("MAX_STREAMS_BIDI frame write failed: {s}", .{@errorName(err)});
                         };
                         sent_max_streams_bidi = conn.local_max_streams_bidi;
+                    }
+                    if (conn.local_max_streams_uni > conn.last_sent_max_streams_uni) {
+                        _ = (frame.Frame{ .max_streams_uni = .{ .max = conn.local_max_streams_uni } }).write(w) catch |err| {
+                            logger.err("MAX_STREAMS_UNI frame write failed: {s}", .{@errorName(err)});
+                        };
+                        sent_max_streams_uni = conn.local_max_streams_uni;
                     }
 
                     // Append pending NEW_CONNECTION_ID frames
@@ -485,11 +492,18 @@ pub fn generateAndSendAck(
                     if (pkt_len != 0) {
                         const pkt = packet_storage[0..pkt_len];
                         const send_start_ns = compat.nanoTimestamp();
+                        // MAX_* frames make the packet ack-eliciting, and it
+                        // is resent with current values if lost (RFC 9000
+                        // §13.3; SONNY-6486).
+                        const carries_control = fc_frames_sent > 0 or sent_max_data != null or
+                            sent_max_streams_bidi != null or sent_max_streams_uni != null;
+                        const ack_pn = conn.pn_app_tx;
                         // CANARY: REQ=REQ-QUIC-HC-086; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckOnlySingleSend; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
                         // sendAppPacketAndTrack is the single send/accounting
                         // path. Sending once here and once inside the helper
                         // doubled normal ACK traffic during response fan-out.
-                        const sent_ok = sendAppPacketAndTrack(ack_ctx, pkt, false, "normal ACK");
+                        const sent_ok = sendAppPacketAndTrack(ack_ctx, pkt, carries_control, "normal ACK");
+                        if (sent_ok and carries_control) conn.noteControlPacket(ack_pn, frames_buf.items);
                         const send_end_ns = compat.nanoTimestamp();
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
@@ -504,6 +518,7 @@ pub fn generateAndSendAck(
                         if (sent_ok) {
                             if (sent_max_data) |value| conn.last_sent_max_data = value;
                             if (sent_max_streams_bidi) |value| conn.last_sent_max_streams_bidi = value;
+                            if (sent_max_streams_uni) |value| conn.last_sent_max_streams_uni = value;
                         } else {
                             conn.pending_new_cid = pending_new_cid_before;
                         }

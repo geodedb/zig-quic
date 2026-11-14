@@ -421,6 +421,8 @@ const AckDesc = struct { largest: u64, first_range: u64, ranges: []const frame.A
 
 // Reassembly support – canonical definitions live in connection/stream.zig
 const stream_mod = @import("connection/stream.zig");
+const ctrl_retx_mod = @import("connection/ctrl_retx.zig");
+pub const retx_diag = @import("connection/retx_diag.zig");
 const Segment = stream_mod.Segment;
 pub const StreamRx = stream_mod.StreamRx;
 pub const StreamReceiveState = stream_mod.ReceiveState;
@@ -854,10 +856,21 @@ pub const Connection = struct {
     /// entries an ACK can affect instead of the whole map.
     app_stream_retx_order: std.ArrayList(u64) = .empty,
     app_stream_retx_head: usize = 0,
+    /// Earlier packet numbers of re-sent STREAM data: old pn -> the pn it was
+    /// re-sent as. An ACK for the original packet acknowledges the data
+    /// even after it was re-keyed (SONNY-6478 follow-up).
+    app_stream_retx_alias: std.AutoHashMapUnmanaged(u64, u64) = .empty,
     /// Diagnostic counter (SONNY-6434): cumulative STREAM retransmission
     /// tracking entries examined while processing app-space ACK frames.
     /// Lets tests bound the per-ACK work of the retransmission path.
     ack_retx_entries_visited: u64 = 0,
+    /// Diagnostic counter (SONNY-6478): cumulative packets sent to
+    /// retransmit tracked STREAM data (ACK-driven loss recovery and PTO
+    /// probes). Lets tests assert that delivered data is not resent.
+    stream_retx_packets: u64 = 0,
+    /// Opt-in diagnostic (off by default): counts retransmissions of STREAM
+    /// data the peer had already acknowledged (connection/retx_diag.zig).
+    retx_diag: retx_diag.Ledger = .{},
     // Queue of incoming peer-initiated streams waiting to be accepted
     incoming_stream_queue: std.ArrayList(u64) = .empty,
     // CANARY: REQ=REQ-QUIC-HC-037; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionRxWake; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
@@ -913,7 +926,21 @@ pub const Connection = struct {
     local_max_streams_bidi: u64 = 1000,
     local_max_streams_uni: u64 = 1000,
     last_sent_max_streams_bidi: u64 = 0,
+    last_sent_max_streams_uni: u64 = 0,
     opened_uni: u64 = 0,
+    /// Stream retirement (SONNY-6478, see connection/stream_retire.zig).
+    /// Per direction (bidi, uni): one past the highest peer-initiated stream
+    /// number seen, and peer-initiated streams retired so far.
+    peer_stream_next: [2]u64 = .{ 0, 0 },
+    peer_streams_retired: [2]u64 = .{ 0, 0 },
+    /// Peer-initiated stream ids opened implicitly (RFC 9000 §3.2) by a
+    /// higher-numbered stream and not used yet.
+    peer_stream_gaps: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    /// Diagnostic counter: streams whose state has been released.
+    streams_retired: u64 = 0,
+    /// Control frames (MAX_*, RESET_STREAM) in flight by packet number, for
+    /// retransmission when lost (SONNY-6486, connection/ctrl_retx.zig).
+    ctrl_retx: std.AutoHashMapUnmanaged(u64, ctrl_retx_mod.Entry) = .empty,
     conn_send_off: u64 = 0,
     conn_recv_total: u64 = 0,
     // RFC 9000 §4.1 connection-level receive flow control (QC-01): running sum
@@ -1023,6 +1050,12 @@ pub const Connection = struct {
     transport_params_applied: bool = false,
     ack_delay_exponent: u8 = 3, // RFC 9000 default when absent
     max_ack_delay_ms: u16 = 25, // RFC 9000 default (25 ms)
+    /// Our own ACK Delay exponent and maximum ACK delay (RFC 9000 §18.2),
+    /// advertised when not the defaults. `ack_delay_exponent` and
+    /// `max_ack_delay_ms` above are the PEER's values (SONNY-6486: our ACK
+    /// Delay used to be encoded with the peer's exponent).
+    local_ack_delay_exponent: u8 = 3,
+    local_max_ack_delay_ms: u16 = 25,
     peer_max_udp_payload_size: u16 = 1200, // enforce <= path_mtu
     active_connection_id_limit: u64 = 2, // minimum permitted (RFC 9000 §18.2)
     // Count of locally issued connection IDs (includes initial our_scid as 1)
@@ -1114,9 +1147,10 @@ pub const Connection = struct {
         if (origin_ns == 0 or now_ns <= origin_ns) return 0;
         const delta_ns: u64 = now_ns - origin_ns;
         var delay_us: u64 = delta_ns / 1000;
-        const max_us: u64 = @as(u64, self.max_ack_delay_ms) * 1000;
+        const max_us: u64 = @as(u64, self.local_max_ack_delay_ms) * 1000;
         if (delay_us > max_us) delay_us = max_us;
-        const shift: u6 = @intCast(self.ack_delay_exponent);
+        // The peer decodes with the exponent WE advertise.
+        const shift: u6 = @intCast(@min(self.local_ack_delay_exponent, 20));
         return delay_us >> shift;
     }
 
@@ -1171,11 +1205,11 @@ pub const Connection = struct {
 
     /// Return true when the receive side of the stream has reached FIN.
     pub fn isStreamFinished(self: *Connection, id: u64) bool {
-        if (!self.streams_rx_init) return false;
-        if (self.streams_rx.getPtr(id)) |rx| {
-            return rx.isFinished();
+        if (self.streams_rx_init) {
+            if (self.streams_rx.getPtr(id)) |rx| return rx.isFinished();
         }
-        return false;
+        // A retired stream was read to its end (SONNY-6478).
+        return self.isStreamRetired(id);
     }
 
     /// Mark stream for deferred MAX_STREAM_DATA emission without scanning all streams.
@@ -1326,7 +1360,10 @@ pub const Connection = struct {
         self.app_stream_retx_init = true;
         self.app_stream_retx_order = .empty;
         self.app_stream_retx_head = 0;
+        self.app_stream_retx_alias = .empty;
         self.ack_retx_entries_visited = 0;
+        self.stream_retx_packets = 0;
+        self.retx_diag = .{};
         self.stream_send_state = .Ready;
         self.stream_recv_state = .Recv;
         self.stream_send_aborted = false;
@@ -1397,6 +1434,12 @@ pub const Connection = struct {
         self.last_sent_max_stream_data = 0;
         self.last_sent_max_data = 0;
         self.last_sent_max_streams_bidi = 0;
+        self.last_sent_max_streams_uni = 0;
+        self.peer_stream_next = .{ 0, 0 };
+        self.peer_streams_retired = .{ 0, 0 };
+        self.peer_stream_gaps = .empty;
+        self.streams_retired = 0;
+        self.ctrl_retx = .empty;
         self.tx_sent_bytes_since_key = 0;
         self.handshake_done_sent = false;
         self.handshake_done_seen = false;
@@ -1485,6 +1528,8 @@ pub const Connection = struct {
         self.transport_params_applied = false;
         self.ack_delay_exponent = 3;
         self.max_ack_delay_ms = 25;
+        self.local_ack_delay_exponent = 3;
+        self.local_max_ack_delay_ms = 25;
         self.peer_max_udp_payload_size = 1200;
         self.active_connection_id_limit = 2;
         // Initialize ACK timing
@@ -1650,6 +1695,9 @@ pub const Connection = struct {
             self.streams_rx.deinit();
         }
         if (self.stream_txs_init) self.stream_txs.deinit();
+        self.peer_stream_gaps.deinit(self.allocator.*);
+        self.deinitControlTracking();
+        self.retx_diag.deinit(self.allocator.*);
         if (self.app_stream_retx_init) {
             var retx_it = self.app_stream_retx.iterator();
             while (retx_it.next()) |entry| {
@@ -1657,6 +1705,7 @@ pub const Connection = struct {
             }
             self.app_stream_retx.deinit();
             self.app_stream_retx_order.deinit(self.allocator.*);
+            self.app_stream_retx_alias.deinit(self.allocator.*);
         }
         // Free incoming stream queue
         if (self.incoming_stream_queue.capacity != 0) self.incoming_stream_queue.deinit(self.allocator.*);
@@ -1961,9 +2010,13 @@ pub const Connection = struct {
             else => {},
         }
         if (b != 0) ctr.seen_any = true;
-        if (space == .Application and b != 0) {
-            self.ecn_app_ack_pending = true;
-        }
+        // The counts ride in the next ACK this endpoint owes. A mark alone
+        // does not owe an ACK: almost every datagram is ECT-marked, including
+        // ACK-only ones, and answering those with an ACK made two endpoints
+        // exchange ACKs forever (RFC 9000 §13.2.1: a non-ack-eliciting packet
+        // MUST NOT be sent in response to a non-ack-eliciting packet;
+        // SONNY-6478). `ecn_app_ack_pending` is only set when an ACK owed for
+        // an ack-eliciting packet could not be sent.
     }
 
     /// Return ECN counts for ACK_ECN emission in the given PN space if any ECN
@@ -2189,6 +2242,8 @@ pub const Connection = struct {
     const methods_a = @import("connection/methods_a.zig").bind(@This());
     const methods_b = @import("connection/methods_b.zig").bind(@This());
     const methods_c = @import("connection/methods_c.zig").bind(@This());
+    const methods_retire = @import("connection/stream_retire.zig").bind(@This());
+    const methods_ctrl = ctrl_retx_mod.bind(@This());
 
     pub const storeNegotiatedAlpn = methods_a.storeNegotiatedAlpn;
     pub const storePeerTransportParams = methods_a.storePeerTransportParams;
@@ -2262,7 +2317,10 @@ pub const Connection = struct {
     pub const cancelPtoInitial = methods_b.cancelPtoInitial;
     pub const cancelPtoHandshake = methods_b.cancelPtoHandshake;
     pub const cancelPtoApp = methods_b.cancelPtoApp;
+    pub const discardSpaceRecovery = methods_b.discardSpaceRecovery;
+    pub const handshakePtoDue = methods_b.handshakePtoDue;
     pub const computeAndMaybeArmPto = methods_b.computeAndMaybeArmPto;
+    pub const appPtoDue = methods_b.appPtoDue;
     pub const pmtudStart = methods_b.pmtudStart;
     pub const pmtudArm = methods_b.pmtudArm;
     pub const pmtudOnTimer = methods_b.pmtudOnTimer;
@@ -2307,6 +2365,18 @@ pub const Connection = struct {
     pub const onRetireConnectionId = methods_c.onRetireConnectionId;
     pub const acquireLocalCid = methods_c.acquireLocalCid;
     pub const issueNewConnectionIdRotating = methods_c.issueNewConnectionIdRotating;
+
+    pub const isStreamRetired = methods_retire.isStreamRetired;
+    pub const admitStream = methods_retire.admitStream;
+    pub const maybeRetireStream = methods_retire.maybeRetireStream;
+    pub const releaseStreamState = methods_retire.releaseStreamState;
+    pub const noteStreamPacketTracked = methods_retire.noteStreamPacketTracked;
+    pub const noteStreamPacketReleased = methods_retire.noteStreamPacketReleased;
+    pub const maybeSendMaxStreams = methods_retire.maybeSendMaxStreams;
+    pub const noteControlPacket = methods_ctrl.noteControlPacket;
+    pub const onAckControlFrames = methods_ctrl.onAckControlFrames;
+    pub const deinitControlTracking = methods_ctrl.deinitControlTracking;
+    pub const onStreamDataBlocked = methods_ctrl.onStreamDataBlocked;
 };
 
 /// Local CID entry (minimal for now). Will be expanded with expiration/retire markers.

@@ -199,10 +199,27 @@ fn recordFailure(ctx: ClientCtx, phase: []const u8) void {
 
 /// Per-client state at an echo/FIN deadline, to tell a starved peer (the
 /// server never acknowledged anything) from a stalled stream.
-fn reportStreamTimeout(ctx: ClientCtx, conn: *api.Connection, sid: api.QuicStreamId, handshake_ms: i64, waited_ms: i64, received: usize) void {
+fn reportStreamTimeout(ctx: ClientCtx, ep: *endpoint_mod.Endpoint, conn: *api.Connection, sid: api.QuicStreamId, handshake_ms: i64, waited_ms: i64, received: usize) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    conn.mu.lockUncancelable(io);
+    defer conn.mu.unlock(io);
+    const app = &conn.rec.spaces[2];
+    var in_flight_ae: usize = 0;
+    for (app.sent.items) |sp| {
+        if (sp.ack_eliciting and !sp.acked and !sp.declared_lost) in_flight_ae += 1;
+    }
+    const now_i = @import("compat").nanoTimestamp();
+    const now_ns: u64 = @intCast(@max(0, now_i));
+    const deadline = conn.rec.ptoDeadlineNs(.Application);
+    // maxInt when no application PTO deadline exists.
+    const pto_due_ms: u64 = if (deadline) |d| (if (d > now_ns) (d - now_ns) / 1_000_000 else 0) else std.math.maxInt(u64);
     std.debug.print(
-        "high-parallel client {d}: handshake_ms={d} waited_ms={d} received={d}/{d} peer_fin={} pto_app_count={d} pn_app_tx={d} largest_acked={d} tracked_stream_packets={d}\n",
-        .{ ctx.index, handshake_ms, waited_ms, received, PAYLOAD_BYTES, api.isStreamFinished(conn, sid), conn.pto_app_count, conn.pn_app_tx, conn.largest_acked, conn.app_stream_retx.count() },
+        "high-parallel client {d}: handshake_ms={d} waited_ms={d} received={d}/{d} peer_fin={}\n" ++
+            "  app: pto_app_count={d} pto_active={} pto_due_in_ms={d} pn_tx={d} largest_acked={?d} tracked={d} ack_eliciting_in_flight={d} stream_packets={d} stream_retx={d}\n" ++
+            "  recovery: pto_count={d} rtt_sample={} srtt_us={d} bytes_in_flight={d} cwnd={d} initial_tracked={d} handshake_tracked={d} endpoint_timers={d}\n",
+        .{ ctx.index, handshake_ms, waited_ms, received, PAYLOAD_BYTES, api.isStreamFinished(conn, sid) } ++
+            .{ conn.pto_app_count, conn.pto_app_active, pto_due_ms, conn.pn_app_tx, app.largest_acked, app.sent.items.len, in_flight_ae, conn.app_stream_retx.count(), conn.stream_retx_packets } ++
+            .{ conn.rec.pto_count, conn.rec.rtt.have_sample, conn.rec.rtt.smoothed_rtt_ns / 1000, conn.rec.cc.bytes_in_flight, conn.rec.cc.cwnd, conn.rec.spaces[0].sent.items.len, conn.rec.spaces[1].sent.items.len, ep.timers.items.len },
     );
 }
 
@@ -302,7 +319,7 @@ fn clientThread(ctx: ClientCtx) void {
         }
     }
 
-    reportStreamTimeout(ctx, conn, sid, handshake_ms, nowMs() - rt_start, received);
+    reportStreamTimeout(ctx, &ep, conn, sid, handshake_ms, nowMs() - rt_start, received);
     recordFailure(ctx, "echo or peer FIN deadline");
 }
 

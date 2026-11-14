@@ -84,7 +84,7 @@ handshakes (where listed).
 | `integration/handshake_e2e` | `serial`, `10p`, `100p`, `1Kp`, `10Kp` | Initial -> Handshake-complete wall-clock latency | < 300s | real UDP + TLS certs under `./test-certs/` |
 | `integration/stream_throughput` | `64B-c1`, `1KB-c1`, `64KB-c1`, `64B-c10`, `1KB-c10`, `1KB-c100` | MB/s + packets-per-second at varying payload / concurrency | < 300s | real UDP + TLS certs |
 | `integration/datagram_batch` | `batch_1`, `batch_16`, `batch_64` | Endpoint-mutex hold time under batch RX | < 60s | Guards issue #126 regression |
-| `integration/flush_cadence` | `small_writes_1_stream`, `fanout_two_hop`, `burst_flush`, `sustained_writes` | Flush coalescing behaviour + burst / single ratio | < 60s | `burst_flush` currently 9.85x single-write baseline; target <= 1.5x post-fix (geode) |
+| `integration/flush_cadence` | `small_writes_1_stream`, `fanout_two_hop`, `burst_flush`, `sustained_writes` | Flush coalescing behaviour + burst / single ratio | < 60s | `burst_flush` currently 9.85x single-write baseline; target <= 1.5x post-fix (geode). Until SONNY-6486 the client slept in `pollWithStats(1)` between echoes, so the numbers included thread wake-up, and before SONNY-6478 an endless ACK exchange kept that thread awake (14.5 vs 10.9 bursts/s); the client now polls without sleeping. Compare runs across that change with care. |
 
 ### External tier (`benchmarks/external/`)
 

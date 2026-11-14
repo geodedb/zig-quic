@@ -746,6 +746,9 @@ pub const Endpoint = struct {
     captures: std.ArrayList(OutCaptured),
     // TEST-ONLY: runtime flag to enable outbound capture in tests
     test_capture_enabled: bool = false,
+    /// Set while forceExpireAllTimers() runs: a forced PTO timer counts as
+    /// past its deadline (see the PtoApp expiry check).
+    forcing_timer_expiry: bool = false,
     // Retired (closed) connections removed from maps & timers but not yet destroyed.
     // They stay here until explicit api.destroy() or endpoint.deinit(), allowing external
     // code (e.g., server CLI loop) holding an opaque pointer to observe closed state
@@ -3175,6 +3178,14 @@ pub const Endpoint = struct {
                     // connection mutex to keep burst-loss recovery deterministic.
                     c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    if (!self.forcing_timer_expiry and !c.handshakePtoDue(.Initial, @intCast(@max(0, nowNsMonotonic())))) {
+                        // Early wake-up (NEWGAP-10): re-arm for the real deadline.
+                        if (c.pto_initial_active and c.pto_initial_id == t.id) {
+                            c.pto_initial_active = false;
+                            c.markPtoDirty();
+                        }
+                        continue;
+                    }
                     c.setPtoExpiredInitial();
                     // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
                     self.sendPtoProbe(c, .PtoInitial) catch |err| {
@@ -3185,6 +3196,14 @@ pub const Endpoint = struct {
                     if (!self.isConnectionLive(c)) continue;
                     c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    if (!self.forcing_timer_expiry and !c.handshakePtoDue(.Handshake, @intCast(@max(0, nowNsMonotonic())))) {
+                        // Early wake-up (NEWGAP-10): re-arm for the real deadline.
+                        if (c.pto_handshake_active and c.pto_handshake_id == t.id) {
+                            c.pto_handshake_active = false;
+                            c.markPtoDirty();
+                        }
+                        continue;
+                    }
                     c.setPtoExpiredHandshake();
                     // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
                     self.sendPtoProbe(c, .PtoHandshake) catch |err| {
@@ -3195,7 +3214,15 @@ pub const Endpoint = struct {
                     if (!self.isConnectionLive(c)) continue;
                     c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-                    c.setPtoExpiredApp();
+                    if (self.forcing_timer_expiry or c.appPtoDue(@intCast(@max(0, nowNsMonotonic())))) {
+                        c.setPtoExpiredApp();
+                    } else if (c.pto_app_active and c.pto_app_id == t.id) {
+                        // Stale or early timer (SONNY-6478): no probe. The
+                        // dirty recompute re-arms it for the real deadline,
+                        // or not at all when nothing is in flight.
+                        c.pto_app_active = false;
+                        c.markPtoDirty();
+                    }
                 },
                 .Pmtud => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
@@ -3229,6 +3256,8 @@ pub const Endpoint = struct {
             self.timers.items[i].deadline_ns_extra = 0;
         }
         timerHeapifyAll(&self.timers, &self.timer_index);
+        self.forcing_timer_expiry = true;
+        defer self.forcing_timer_expiry = false;
         self.processExpiredTimers(now_ms);
     }
 

@@ -56,6 +56,19 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.peer_max_stream_data = 0;
     conn.peer_max_streams_bidi = 0;
     conn.peer_max_streams_uni = 0;
+    // Stream-count and retirement bookkeeping (SONNY-6478): handlers check
+    // whether a stream id is retired before creating state for it.
+    conn.opened_bidi = 0;
+    conn.opened_uni = 0;
+    conn.local_max_streams_bidi = 1000;
+    conn.local_max_streams_uni = 1000;
+    conn.last_sent_max_streams_bidi = 0;
+    conn.last_sent_max_streams_uni = 0;
+    conn.peer_stream_next = .{ 0, 0 };
+    conn.peer_streams_retired = .{ 0, 0 };
+    conn.peer_stream_gaps = .empty;
+    conn.streams_retired = 0;
+    conn.ctrl_retx = .empty;
     conn.pn_app_tx = 0;
     conn.tx_key_phase = false;
     conn.app_tx_keys = null;
@@ -87,6 +100,8 @@ fn createTestConnection() !*conn_mod.Connection {
 
 // Test helper: Cleanup test connection
 fn destroyTestConnection(conn: *conn_mod.Connection) void {
+    conn.peer_stream_gaps.deinit(test_allocator);
+    conn.deinitControlTracking();
     conn.initial_token.deinit(test_allocator);
     conn.reset_tokens.deinit(test_allocator);
     // Clean up datagram inbox
@@ -466,7 +481,7 @@ test "QC-05 - MAX_STREAM_DATA for a peer-initiated uni stream is STREAM_STATE_ER
 // STREAM_DATA_BLOCKED Frame Tests (RFC 9000 §19.13)
 // =============================================================================
 
-test "RFC 9000 §19.13 - STREAM_DATA_BLOCKED is no-op" {
+test "RFC 9000 §19.13 - STREAM_DATA_BLOCKED is ack-eliciting and sends nothing for an unknown stream" {
     const conn = try createTestConnection();
     defer destroyTestConnection(conn);
     var ctx = createTestContext(conn);
@@ -476,9 +491,15 @@ test "RFC 9000 §19.13 - STREAM_DATA_BLOCKED is no-op" {
         .limit = 1000,
     };
 
+    const pn_before = conn.pn_app_tx;
     const result = frame_handler.handleStreamDataBlocked(&ctx, sdb);
 
-    try testing.expect(!result.saw_ack_eliciting);
+    // RFC 9002 §2: every frame but ACK, PADDING and CONNECTION_CLOSE is
+    // ack-eliciting (SONNY-6486: this used to assert the opposite).
+    try testing.expect(result.saw_ack_eliciting);
+    try testing.expect(!result.saw_close);
+    // No receive state for the stream: no MAX_STREAM_DATA to send.
+    try testing.expectEqual(pn_before, conn.pn_app_tx);
 }
 
 // =============================================================================

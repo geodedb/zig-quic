@@ -520,6 +520,7 @@ pub fn processShortHeaderResolved(
             });
             conn.hs_rx_keys = null;
             conn.hs_tx_keys = null;
+            conn.discardSpaceRecovery(.Handshake);
             if (conn.crypto_retx_handshake) |buf| {
                 conn.allocator.free(buf);
                 conn.crypto_retx_handshake = null;
@@ -586,7 +587,8 @@ pub fn processShortHeaderResolved(
         );
         if (!send_immediate_ack) {
             if (conn.app_ack_delay_timer_id == 0) {
-                const delay_ms: u32 = @max(@as(u32, 1), @as(u32, conn.max_ack_delay_ms));
+                // Our own maximum ACK delay, which the peer budgets for.
+                const delay_ms: u32 = @max(@as(u32, 1), @as(u32, conn.local_max_ack_delay_ms));
                 conn.app_ack_delay_timer_id = ctx.schedule_timer_fn(conn, .AppAckDelay, delay_ms) catch 0;
             }
             return;

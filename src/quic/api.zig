@@ -68,6 +68,13 @@ pub fn endpointDeinit(ep: *QuicEndpoint) void {
 /// RFC 9000 §7.2 requires clients to send an Initial probe sized to the path MTU.
 /// We satisfy this by immediately calling `clientSendInitialProbe`, which pads to
 /// 1200 bytes per §14.1 before any handshake data is exchanged.
+///
+/// `server_addr` is "host:port" ("[v6]:port" for IPv6). Host names are looked
+/// up in /etc/hosts only: there is no DNS resolution, and IPv6 zone ids are
+/// not supported. An unlisted name fails with `error.HostNotFound`, a zone id
+/// with `error.UnsupportedZoneId`, malformed input with `error.InvalidAddress`
+/// (see `endpoint/utils.zig` `resolveAny`). Resolve names yourself and pass a
+/// numeric address when DNS is needed.
 pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, server_name: []const u8) !*Connection {
     const conn = try ep.connectClient(server_addr);
     errdefer {
@@ -78,8 +85,15 @@ pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, server_name: []const 
             observability.endConnectionSpan(conn.obs_span, false, "connect failed");
             conn.obs_span_active = false;
         }
-        conn.deinit();
-        ep.allocator.destroy(conn);
+        // The connection is registered with the endpoint (connection map,
+        // timers, PTO-dirty and pending-handshake sets). Freeing it directly
+        // left those entries pointing at freed memory: the next poll or
+        // endpoint deinit used it after free. Tear it down through the
+        // endpoint, under its mutex like api.destroy.
+        const io = std.Io.Threaded.global_single_threaded.io();
+        ep.mu.lockUncancelable(io);
+        defer ep.mu.unlock(io);
+        ep.destroyConnections(&[_]*Connection{conn});
     }
     // Observability: open one span per client connection. The seam's
     // `enabled = false` path is a comptime no-op; the call below

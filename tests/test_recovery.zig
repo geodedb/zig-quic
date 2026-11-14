@@ -91,7 +91,10 @@ test "time_threshold_loss_and_loss_time_scheduling" {
     try r.onPacketSent(space, 1, 1200, true, 0);
     try r.onPacketSent(space, 2, 1200, true, ms(10));
 
-    // No ACKs, advance time beyond time-threshold to trigger loss
+    // RFC 9002 §6.1: loss needs a later packet acknowledged. PN 2 is
+    // acknowledged at once; once PN 1 is past the time threshold the loss
+    // timer declares it lost (SONNY-6454: this used to happen with no ACK).
+    _ = r.onAckReceived(space, &[_]u64{2}, 0, ms(10) + 1000);
     const thr = rec.LossDetector.timeThresholdNs(r.rtt.smoothed_rtt_ns, r.rtt.latest_rtt_ns);
     const lost = r.onLossTimeExpired(thr + 1);
     try std.testing.expect(lost >= 1200);
@@ -143,16 +146,21 @@ test "persistent_congestion_reduces_cwnd_to_min" {
     const pto_base = r.rtt.computePtoNsWithBackoff(0, r.timer_granularity_ns);
     const pc_period = pto_base * r.k_pc_threshold;
 
-    // Send two ack-eliciting packets spanning more than the PC period
+    // Send two ack-eliciting packets spanning more than the PC period,
+    // then three more; acknowledging only the last declares the first two
+    // lost by packet threshold. RFC 9002 §7.6.2 establishes persistent
+    // congestion on an acknowledgment, with no packet between the two lost
+    // ones acknowledged (SONNY-6454: this used to be declared from the loss
+    // timer with nothing acknowledged at all).
+    // (Twice the period: the acknowledgment's RTT sample raises the PTO.)
     const t0: u64 = 0;
-    const t1: u64 = pc_period + 1;
+    const t1: u64 = 2 * pc_period;
     try r.onPacketSent(space, 1, 1200, true, t0);
     try r.onPacketSent(space, 2, 1200, true, t1);
-
-    // Advance time past time-threshold for both, to declare them lost
-    const thr = rec.LossDetector.timeThresholdNs(r.rtt.smoothed_rtt_ns, r.rtt.latest_rtt_ns);
-    const now = t1 + thr + 1;
-    const lost = r.onLossTimeExpired(now);
+    try r.onPacketSent(space, 3, 1200, true, t1 + 1);
+    try r.onPacketSent(space, 4, 1200, true, t1 + 2);
+    try r.onPacketSent(space, 5, 1200, true, t1 + 3);
+    const lost = r.onAckReceived(space, &[_]u64{5}, 0, t1 + 4).bytes_lost;
     try std.testing.expect(lost >= 2400);
 
     // Upon persistent congestion, cwnd collapses to 2 * max_datagram_size (assume 1200)

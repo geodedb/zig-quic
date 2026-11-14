@@ -32,14 +32,23 @@ pub fn bind(comptime Connection: type) type {
             data: []const u8,
         ) void {
             if (!self.app_stream_retx_init) return;
+            self.retx_diag.noteSent(self.allocator.*, pn, stream_id, offset, data.len, fin);
             const owned = self.allocator.dupe(u8, data) catch return;
-            putAppStreamRetx(self, pn, .{
+            if (putAppStreamRetx(self, pn, .{
                 .stream_id = stream_id,
                 .offset = offset,
                 .fin = fin,
                 .data = owned,
                 .retransmit_count = @as(u16, 0),
-            });
+            })) self.noteStreamPacketTracked(stream_id);
+        }
+
+        /// Re-track `entry` under a new packet number after retransmitting
+        /// it. If tracking fails the data is gone; account for it so the
+        /// stream does not wait for an acknowledgement that cannot come.
+        fn retrackAppStreamRetx(self: *Connection, pn: u64, entry: RetxEntry(Connection)) void {
+            const stream_id = entry.stream_id;
+            if (!putAppStreamRetx(self, pn, entry)) self.noteStreamPacketReleased(stream_id);
         }
 
         fn RetxEntry(comptime C: type) type {
@@ -63,15 +72,16 @@ pub fn bind(comptime Connection: type) type {
         }
 
         /// Track `entry` under `pn` in the retransmit map and its PN order.
-        /// Takes ownership of `entry.data`; frees it if tracking fails.
-        fn putAppStreamRetx(self: *Connection, pn: u64, entry: RetxEntry(Connection)) void {
+        /// Takes ownership of `entry.data`; frees it and returns false if
+        /// tracking fails.
+        fn putAppStreamRetx(self: *Connection, pn: u64, entry: RetxEntry(Connection)) bool {
             const order = retxOrder(self);
             const at = lowerBoundPn(order, pn);
             const in_order = at < order.len and order[at] == pn;
             if (!in_order) {
                 self.app_stream_retx_order.ensureUnusedCapacity(self.allocator.*, 1) catch {
                     self.allocator.free(entry.data);
-                    return;
+                    return false;
                 };
             }
             // QUAL-08: getOrPut so a packet-number collision (e.g. PTO/probe
@@ -79,14 +89,19 @@ pub fn bind(comptime Connection: type) type {
             // buffer instead of leaking it.
             const gop = self.app_stream_retx.getOrPut(pn) catch {
                 self.allocator.free(entry.data);
-                return;
+                return false;
             };
-            if (gop.found_existing) self.allocator.free(gop.value_ptr.data);
+            if (gop.found_existing) {
+                const displaced = gop.value_ptr.stream_id;
+                self.allocator.free(gop.value_ptr.data);
+                self.noteStreamPacketReleased(displaced);
+            }
             gop.value_ptr.* = entry;
             if (!in_order) {
                 // New packet numbers are the largest so far: an append.
                 self.app_stream_retx_order.insertAssumeCapacity(self.app_stream_retx_head + at, pn);
             }
+            return true;
         }
 
         /// Drop PNs whose entry is gone from the front of the order, and
@@ -173,6 +188,7 @@ pub fn bind(comptime Connection: type) type {
         /// unacknowledged data.
         fn dropAckedStreamTracking(self: *Connection, intervals: []const AckedInterval) void {
             if (!self.app_stream_retx_init) return;
+            self.retx_diag.noteAck(self.allocator.*, intervals);
             for (intervals) |iv| {
                 const order = retxOrder(self);
                 if (order.len == 0) break;
@@ -184,6 +200,8 @@ pub fn bind(comptime Connection: type) type {
                     self.ack_retx_entries_visited +%= 1;
                     if (self.app_stream_retx.fetchRemove(pn)) |removed| {
                         self.allocator.free(removed.value.data);
+                        // May retire the stream (RFC 9000 §3.1 Data Recvd).
+                        self.noteStreamPacketReleased(removed.value.stream_id);
                     }
                 }
                 // Splice [a, b) out of the order (usually a prefix).
@@ -196,7 +214,82 @@ pub fn bind(comptime Connection: type) type {
                     list.items.len -= b - a;
                 }
             }
+            dropAckedRetxAliases(self, intervals);
             pruneAppStreamRetxOrder(self);
+        }
+
+        /// Remember that the data tracked under `old_pn` now lives under
+        /// `new_pn`, so an ACK that covers `old_pn` still acknowledges it.
+        fn noteRekey(self: *Connection, old_pn: u64, new_pn: u64) void {
+            self.app_stream_retx_alias.put(self.allocator.*, old_pn, new_pn) catch return;
+            // Aliases of entries since acknowledged or dropped are dead;
+            // drop them once they outnumber the live entries.
+            if (self.app_stream_retx_alias.count() > 64 + 2 * self.app_stream_retx.count()) pruneRetxAliases(self);
+        }
+
+        /// The current key of the data first sent as `pn`, if still tracked.
+        fn resolveRetxAlias(self: *Connection, pn: u64) ?u64 {
+            var cur = pn;
+            var hops: usize = 0;
+            while (self.app_stream_retx_alias.get(cur)) |next| : (hops += 1) {
+                if (hops >= 64) return null;
+                if (self.app_stream_retx.contains(next)) return next;
+                cur = next;
+            }
+            return null;
+        }
+
+        fn pruneRetxAliases(self: *Connection) void {
+            var dead: std.ArrayList(u64) = .empty;
+            defer dead.deinit(self.allocator.*);
+            var it = self.app_stream_retx_alias.keyIterator();
+            while (it.next()) |k| {
+                if (resolveRetxAlias(self, k.*) == null) dead.append(self.allocator.*, k.*) catch return;
+            }
+            for (dead.items) |k| _ = self.app_stream_retx_alias.remove(k);
+        }
+
+        /// ACKs covering an earlier packet number of re-sent data release
+        /// the data where it lives now. Without this, data re-sent by a PTO
+        /// whose original packet was then acknowledged stayed tracked and
+        /// was sent again if the re-sent copy was lost (SONNY-6478).
+        fn dropAckedRetxAliases(self: *Connection, intervals: []const AckedInterval) void {
+            if (self.app_stream_retx_alias.count() == 0) return;
+            var acked_old: std.ArrayList(u64) = .empty;
+            defer acked_old.deinit(self.allocator.*);
+            // Work is min(packet numbers the ACK covers, aliases), never
+            // proportional to both (SONNY-6434: ACK work stays bounded).
+            const n_alias: u64 = self.app_stream_retx_alias.count();
+            var span: u64 = 0;
+            for (intervals) |iv| span +|= (iv.hi - iv.lo) +| 1;
+            if (span <= n_alias) {
+                for (intervals) |iv| {
+                    var pn = iv.lo;
+                    while (true) : (pn += 1) {
+                        if (self.app_stream_retx_alias.contains(pn)) acked_old.append(self.allocator.*, pn) catch return;
+                        if (pn == iv.hi) break;
+                    }
+                }
+            } else {
+                var it = self.app_stream_retx_alias.keyIterator();
+                while (it.next()) |k| {
+                    for (intervals) |iv| {
+                        if (k.* >= iv.lo and k.* <= iv.hi) {
+                            acked_old.append(self.allocator.*, k.*) catch return;
+                            break;
+                        }
+                    }
+                }
+            }
+            for (acked_old.items) |old| {
+                if (resolveRetxAlias(self, old)) |cur| {
+                    if (self.app_stream_retx.fetchRemove(cur)) |removed| {
+                        self.allocator.free(removed.value.data);
+                        self.noteStreamPacketReleased(removed.value.stream_id);
+                    }
+                }
+                _ = self.app_stream_retx_alias.remove(old);
+            }
         }
 
         fn recordAppStreamRetransmitAttempt(tracked: anytype) void {
@@ -287,8 +380,11 @@ pub fn bind(comptime Connection: type) type {
                 // tracked for the next ACK or PTO. Stop rather than re-encode
                 // every remaining lost packet against a full socket.
                 const pkt_len = sendStreamRetransmission(self, tx, tracked_ptr.*) orelse break;
+                self.retx_diag.noteRetransmit(tracked_ptr.stream_id, tracked_ptr.offset, tracked_ptr.data.len, tracked_ptr.fin);
+                self.retx_diag.noteSent(self.allocator.*, next_pn, tracked_ptr.stream_id, tracked_ptr.offset, tracked_ptr.data.len, tracked_ptr.fin);
                 var tracked = self.app_stream_retx.fetchRemove(lost_pn).?.value;
                 recordAppStreamRetransmitAttempt(&tracked);
+                self.stream_retx_packets +%= 1;
                 logger.debugPrint(
                     "[stream-retx] pn={} -> pn={} stream={} off={} len={} fin={} attempt={}\n",
                     .{
@@ -302,7 +398,8 @@ pub fn bind(comptime Connection: type) type {
                     },
                 );
                 self.onShortHeaderPacketSent(pkt_len, true);
-                putAppStreamRetx(self, next_pn, tracked);
+                retrackAppStreamRetx(self, next_pn, tracked);
+                noteRekey(self, lost_pn, next_pn);
                 retransmitted += 1;
             }
             pruneAppStreamRetxOrder(self);
@@ -489,6 +586,8 @@ pub fn bind(comptime Connection: type) type {
             } else {
                 self.ensureStreamTxInit();
                 if (self.stream_txs.getPtr(id) == null) {
+                    // A retired stream finished both directions (SONNY-6478).
+                    if (self.isStreamRetired(id)) return error.StreamStopped;
                     // Check if this is a client-initiated stream and we're the server
                     const is_client_initiated = (id & 1) == 0;
                     if (self.role == .Server and is_client_initiated) {
@@ -698,6 +797,8 @@ pub fn bind(comptime Connection: type) type {
                 return error.InvalidStream;
             }
             var s = self.streams_rx.getPtr(id) orelse {
+                // A retired stream was read to its end (SONNY-6478).
+                if (self.isStreamRetired(id)) return 0;
                 logger.debugPrint("readStream - stream {} not found in RX map\n", .{id});
                 return error.InvalidStream;
             };
@@ -746,6 +847,9 @@ pub fn bind(comptime Connection: type) type {
                 // PHASE 46: Trigger flow control frame generation after window update
                 // This ensures timely updates when data is consumed (quinn-style)
                 self.advertiseInitialFlowControl();
+                // Everything delivered (RFC 9000 §3.2 Data Read): release the
+                // stream if its send side is finished too.
+                self.maybeRetireStream(id);
             }
 
             // TRACE: readStream returning data
@@ -768,7 +872,10 @@ pub fn bind(comptime Connection: type) type {
                 if (!self.stream_send_state.canWrite() or self.stream_send_aborted) return error.StreamStopped;
             } else {
                 if (!self.stream_txs_init) return error.InvalidStream;
-                const st = self.stream_txs.getPtr(id) orelse return error.InvalidStream;
+                const st = self.stream_txs.getPtr(id) orelse {
+                    if (self.isStreamRetired(id)) return error.StreamStopped;
+                    return error.InvalidStream;
+                };
                 try st.canWrite();
             }
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
@@ -790,7 +897,11 @@ pub fn bind(comptime Connection: type) type {
                 self.tx_key_phase,
             );
             const pkt = packet_storage[0..pkt_len];
+            const sent_pn = self.pn_app_tx;
             _ = try self.send(pkt);
+            // Track the FIN like any STREAM frame: it is retransmitted if lost
+            // and its acknowledgement completes the send side (SONNY-6478).
+            trackAppStreamPacket(self, sent_pn, id, final_off, true, &[_]u8{});
             self.onShortHeaderPacketSent(pkt.len, true);
             if (id == 0) {
                 self.stream_send_fin_sent = true;
@@ -818,7 +929,10 @@ pub fn bind(comptime Connection: type) type {
                 if (!self.stream_send_state.canWrite() or self.stream_send_aborted) return error.StreamStopped;
             } else {
                 if (!self.stream_txs_init) return error.InvalidStream;
-                const st = self.stream_txs.getPtr(id) orelse return error.InvalidStream;
+                const st = self.stream_txs.getPtr(id) orelse {
+                    if (self.isStreamRetired(id)) return error.StreamStopped;
+                    return error.InvalidStream;
+                };
                 try st.canWrite();
             }
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
@@ -855,8 +969,12 @@ pub fn bind(comptime Connection: type) type {
                 self.tx_key_phase,
             );
             const pkt = packet_storage[0..pkt_len];
+            const sent_pn = self.pn_app_tx;
             _ = try self.send(pkt);
+            // Sent again until acknowledged (RFC 9000 §13.3; SONNY-6486).
+            self.noteControlPacket(sent_pn, fbs.getWritten());
             self.onShortHeaderPacketSent(pkt.len, true);
+            self.maybeRetireStream(id);
         }
 
         /// Handle STOP_SENDING by responding with RESET_STREAM carrying our final size.
@@ -869,6 +987,11 @@ pub fn bind(comptime Connection: type) type {
             defer self.mu.unlock(io);
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
+            // Nothing left to stop on a retired stream (SONNY-6478).
+            if (self.isStreamRetired(stream_id)) return;
+            // RFC 9000 §19.5: STOP_SENDING for a receive-only stream is
+            // STREAM_STATE_ERROR (SONNY-6486).
+            if (self.isPeerInitiatedStream(stream_id) and (stream_id & 0x2) != 0) return error.StreamStateError;
             // Mark stream as aborted for sending further STREAM frames
             if (stream_id == 0) {
                 if (!self.stream_send_state.canWrite()) return error.StreamStopped;
@@ -880,12 +1003,14 @@ pub fn bind(comptime Connection: type) type {
                 }
             }
             // Use per-stream offset as final_size (not always stream 0's offset)
+            // Nothing sent on a stream without send state: final size 0 (it
+            // used to report stream 0's offset).
             const final_size: u64 = if (stream_id == 0)
                 self.stream_send_off
             else if (self.stream_txs_init and self.stream_txs.getPtr(stream_id) != null)
                 self.stream_txs.getPtr(stream_id).?.off
             else
-                self.stream_send_off;
+                0;
             // #163: stack buffer for single RESET_STREAM frame (< 40 bytes).
             var frame_buf: [64]u8 = undefined;
             var fbs = @import("compat").fixedBufWriter(&frame_buf);
@@ -904,24 +1029,52 @@ pub fn bind(comptime Connection: type) type {
             ) catch 0;
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
+                const sent_pn = self.pn_app_tx;
                 _ = self.send(pkt) catch |err| {
                     logger.warn("send STOP_SENDING response failed: {s}", .{@errorName(err)});
                 };
+                self.noteControlPacket(sent_pn, fbs.getWritten());
                 self.onShortHeaderPacketSent(pkt.len, true);
             }
+            self.maybeRetireStream(stream_id);
         }
 
         /// Handle a received RESET_STREAM for RX-side teardown. Marks RX aborted, caps final size,
         /// discards any buffered segments beyond final_size, and treats the stream as finished.
         /// Process incoming RESET_STREAM updating RX state and freeing buffers.
-        pub fn handleResetStream(self: *Connection, stream_id: u64, app_error_code: u64, final_size: u64) error{FinalSizeError}!void {
+        pub fn handleResetStream(self: *Connection, stream_id: u64, app_error_code: u64, final_size: u64) error{ FinalSizeError, FlowControlError, StreamLimitExceeded, StreamStateError }!void {
             _ = app_error_code; // surfaced to app layer out of scope here
+            // Frame dispatch releases mu; take it like pushStreamFrame does.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
+            // RFC 9000 §19.4: RESET_STREAM on a send-only stream, or on a
+            // locally initiated stream not yet opened, is STREAM_STATE_ERROR;
+            // a peer stream beyond our limit is STREAM_LIMIT_ERROR (§4.6).
+            // The limit check also bounds the implicitly opened ids that
+            // admitStream records (SONNY-6486).
+            if (!self.isPeerInitiatedStream(stream_id)) {
+                if ((stream_id & 0x2) != 0) return error.StreamStateError;
+                if ((stream_id >> 2) >= self.opened_bidi) return error.StreamStateError;
+            }
+            try self.validatePeerStreamLimit(stream_id);
+            // A retired stream already finished (SONNY-6478).
+            if (!self.admitStream(stream_id)) return;
             // Only stream 0 supported in this slice, but apply generically.
             var s = self.ensureStreamRx(stream_id);
             // Validate the final size BEFORE mutating receive state (RFC 9000
             // §4.5). A FINAL_SIZE_ERROR aborts the connection; the dispatcher
             // maps the returned error to CONNECTION_CLOSE 0x06.
             try s.recordReset(final_size);
+            // §4.5: the final size counts against flow control like data.
+            if (final_size > s.highest_off) {
+                const stream_window: u64 = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
+                const stream_limit = @max(@max(s.local_max_stream_data, s.last_sent_max_stream_data), stream_window);
+                const delta = final_size - s.highest_off;
+                if (final_size > stream_limit or self.conn_recv_highest_total + delta > self.local_max_data) return error.FlowControlError;
+                self.conn_recv_highest_total += delta;
+                s.highest_off = final_size;
+            }
             if (stream_id == 0) {
                 self.stream_recv_aborted = true;
                 self.stream_recv_state = .ResetRead;
@@ -932,16 +1085,28 @@ pub fn bind(comptime Connection: type) type {
                 const seg = s.bufs.items[i];
                 if (seg.off >= final_size) {
                     self.allocator.free(seg.data);
-                    _ = s.bufs.swapRemove(i);
+                    s.buffered_bytes -|= seg.data.len;
+                    // Keep the segments sorted by offset (tryDrain relies on it).
+                    _ = s.bufs.orderedRemove(i);
                     continue;
                 }
-                // If a segment overlaps beyond final_size, trim it
+                // A segment overlapping final_size cannot pass recordReset()
+                // (final_size >= highest received). Trim defensively anyway,
+                // into an allocation of exactly the kept length: segment data
+                // is always freed with its own length (SONNY-6486: the slice
+                // used to be shortened in place, then freed short).
                 const seg_end = seg.off + @as(u64, seg.data.len);
                 if (seg_end > final_size) {
                     const keep_len: usize = @intCast(final_size - seg.off);
-                    // shrinkRetainingCapacity keeps first keep_len bytes
-                    _ = s.bufs.items[i];
-                    s.bufs.items[i].data = s.bufs.items[i].data[0..keep_len];
+                    const kept = self.allocator.dupe(u8, seg.data[0..keep_len]) catch {
+                        self.allocator.free(seg.data);
+                        s.buffered_bytes -|= seg.data.len;
+                        _ = s.bufs.orderedRemove(i);
+                        continue;
+                    };
+                    self.allocator.free(seg.data);
+                    s.buffered_bytes -|= seg.data.len - keep_len;
+                    s.bufs.items[i].data = kept;
                 }
                 i += 1;
             }
@@ -953,18 +1118,20 @@ pub fn bind(comptime Connection: type) type {
                 s.recv_off = final_size;
             }
             if (stream_id == 0) self.stream_recv_fin = true;
+            self.maybeRetireStream(stream_id);
         }
 
         /// Explicitly tear down stream RX state and clear flags for the given stream.
         /// Safe to call multiple times; no-op if stream not present.
         /// Tear down local bookkeeping for a stream (called after FIN/RESET & application consumption).
+        ///
+        /// Not needed for streams that finish normally: those are retired
+        /// automatically once both directions are done (SONNY-6478). This
+        /// releases the state at once, retires the id (later frames for it are
+        /// ignored) and, for a peer-initiated stream, returns its stream-count
+        /// credit.
         pub fn teardownStream(self: *Connection, stream_id: u64) void {
-            if (self.streams_rx_init) {
-                if (self.streams_rx.getPtr(stream_id)) |sr| {
-                    sr.deinit(self.allocator);
-                    _ = self.streams_rx.remove(stream_id);
-                }
-            }
+            self.releaseStreamState(stream_id);
             if (stream_id == 0) {
                 self.stream_opened = false;
                 self.stream_send_aborted = false;
@@ -974,9 +1141,6 @@ pub fn bind(comptime Connection: type) type {
                 self.stream_send_state = .Ready;
                 self.stream_recv_state = .Recv;
                 self.stream_send_off = 0;
-            }
-            if (stream_id != 0 and self.stream_txs_init) {
-                _ = self.stream_txs.remove(stream_id);
             }
         }
 
@@ -1012,6 +1176,7 @@ pub fn bind(comptime Connection: type) type {
             _ = self.rec.onLossTimeExpired(now_ns);
             if (space == .Application) {
                 retransmitLostStreamPackets(self, largest, res.bytes_lost > 0);
+                self.onAckControlFrames(intervals, largest, res.bytes_lost > 0);
             }
             // Reset per-space PTO backoff if any ack-eliciting was acked
             if (res.bytes_acked > 0) switch (space) {
@@ -1086,23 +1251,74 @@ pub fn bind(comptime Connection: type) type {
             self.resetPtoBackoffApp();
         }
 
+        /// Keys for the Initial or Handshake space were discarded (RFC 9001
+        /// §4.9): drop that space's loss recovery state and stop its PTO
+        /// (RFC 9002 §6.4). Without this its packets stayed in flight for
+        /// ever, and the PTO backoff their probes raised (shared with the
+        /// application space) was never reset.
+        pub fn discardSpaceRecovery(self: *Connection, space: recovery.PacketNumberSpace) void {
+            self.rec.discardSpace(space);
+            switch (space) {
+                .Initial => {
+                    self.pto_initial_active = false;
+                    self.pto_initial_count = 0;
+                },
+                .Handshake => {
+                    self.pto_handshake_active = false;
+                    self.pto_handshake_count = 0;
+                },
+                .Application => unreachable,
+            }
+            self.markPtoDirty();
+        }
+
         /// Compute PTO for Application space and arm timer if not active.
         /// Recompute earliest PTO across spaces and (re)arm timer if needed.
         pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
             // Fast path: skip syscall + computation if timer already armed
             if (self.pto_app_active) return;
-            // Use Recovery to compute PTO deadline for Application space only
+            // RFC 9002 §6.2.1: the deadline counts from the most recent
+            // ack-eliciting packet and includes the exponential backoff
+            // (rec.pto_count); no timer while nothing ack-eliciting is in
+            // flight.
             const now_i = compat.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
-            const next_deadline = self.rec.computeSpacePtoTimeNs(.Application, now_ns);
-            if (next_deadline == null) return;
-            const delay_ns: u64 = if (next_deadline.? <= now_ns) 0 else next_deadline.? - now_ns;
-            // Note: computePtoNsWithBackoff already includes backoff via rec.pto_count.
+            const next_deadline = self.rec.ptoDeadlineNs(.Application) orelse return;
+            const delay_ns: u64 = if (next_deadline <= now_ns) 0 else next_deadline - now_ns;
             var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
             if (delay_ms == 0) delay_ms = 1;
-            if (delay_ms > 100) delay_ms = 100; // keep deterministic and fast in tests
+            // The timer wakes at least every 100 ms. appPtoDue() decides on
+            // expiry whether the deadline has really passed, so this bounds
+            // the wake-up interval without shortening the PTO (SONNY-6454).
+            if (delay_ms > 100) delay_ms = 100;
             self.pto_app_active = true;
             self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
+        }
+
+        /// Whether an expired Application PTO timer should send a probe
+        /// (RFC 9002 §6.2.1). The timer is armed once and not moved on every
+        /// send or ACK, so on expiry it may be stale: everything it covered
+        /// may have been acknowledged, or newer packets moved the deadline.
+        /// Probing then would resend delivered data or send a PING loop on an
+        /// idle connection (SONNY-6478). Lost STREAM data still waiting to be
+        /// retransmitted with nothing in flight is always probed for.
+        pub fn appPtoDue(self: *Connection, now_ns: u64) bool {
+            const deadline = self.rec.ptoDeadlineNs(.Application) orelse
+                return self.app_stream_retx_init and self.app_stream_retx.count() > 0;
+            // Timer resolution is 1 ms; treat a deadline within it as passed.
+            return now_ns +| self.rec.timer_granularity_ns >= deadline;
+        }
+
+        /// Whether an expired Initial or Handshake PTO timer should send a
+        /// probe: its RFC 9002 §6.2.1 deadline (last ack-eliciting packet
+        /// in the space plus the backed-off PTO) has passed. The timers
+        /// wake at least every 100 ms; probing on every wake-up raised the
+        /// backoff shared with application data ten times a second
+        /// (NEWGAP-10). No probe when nothing ack-eliciting is in flight.
+        pub fn handshakePtoDue(self: *Connection, space: recovery.PacketNumberSpace, now_ns: u64) bool {
+            std.debug.assert(space != .Application);
+            const deadline = self.rec.ptoDeadlineNs(space) orelse return false;
+            return now_ns +| self.rec.timer_granularity_ns >= deadline;
         }
 
         /// Begin DPLPMTUD probing from base (1200) upward. Requires app_tx_keys.
@@ -1488,7 +1704,7 @@ pub fn bind(comptime Connection: type) type {
                             },
                         }).write(frame_stream.writer()) catch |err| {
                             logger.err("PTO App STREAM frame write failed: {s}", .{@errorName(err)});
-                            putAppStreamRetx(self, probe_pn, tracked);
+                            retrackAppStreamRetx(self, probe_pn, tracked);
                             self.markPtoDirty();
                             return;
                         };
@@ -1496,7 +1712,7 @@ pub fn bind(comptime Connection: type) type {
 
                         if (frame_bytes.len > 0) {
                             const packet_storage = self.packet_pool.checkout() catch {
-                                putAppStreamRetx(self, probe_pn, tracked);
+                                retrackAppStreamRetx(self, probe_pn, tracked);
                                 self.markPtoDirty();
                                 return;
                             };
@@ -1515,9 +1731,13 @@ pub fn bind(comptime Connection: type) type {
                                 const pkt = packet_storage[0..pkt_len];
                                 const sent = self.send(pkt) catch 0;
                                 if (sent == pkt.len) {
+                                    self.retx_diag.noteRetransmit(tracked.stream_id, tracked.offset, tracked.data.len, tracked.fin);
+                                    self.retx_diag.noteSent(self.allocator.*, next_pn, tracked.stream_id, tracked.offset, tracked.data.len, tracked.fin);
                                     recordAppStreamRetransmitAttempt(&tracked);
+                                    self.stream_retx_packets +%= 1;
                                     self.onShortHeaderPacketSent(pkt.len, true);
-                                    putAppStreamRetx(self, next_pn, tracked);
+                                    retrackAppStreamRetx(self, next_pn, tracked);
+                                    noteRekey(self, probe_pn, next_pn);
                                     return;
                                 }
                             }
@@ -1529,7 +1749,7 @@ pub fn bind(comptime Connection: type) type {
                         // timer. No packet was recorded via
                         // onShortHeaderPacketSent(), so explicitly dirty the
                         // connection after restoring the retransmit entry.
-                        putAppStreamRetx(self, probe_pn, tracked);
+                        retrackAppStreamRetx(self, probe_pn, tracked);
                         self.markPtoDirty();
                     }
                 }
@@ -1680,6 +1900,7 @@ pub fn bind(comptime Connection: type) type {
             // Clear cached Initial keys when they're dropped
             self.initial_rx_keys = null;
             self.initial_tx_keys = null;
+            self.discardSpaceRecovery(.Initial);
 
             // RFC 9001 §4.1.2: Server MUST wait until peer Finished is received before dropping handshake keys.
             // Client can drop immediately after sending its Finished.
@@ -1700,6 +1921,7 @@ pub fn bind(comptime Connection: type) type {
                 logger.debugPrint("{s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified });
                 self.hs_rx_keys = null;
                 self.hs_tx_keys = null;
+                self.discardSpaceRecovery(.Handshake);
                 if (self.crypto_retx_handshake) |buf| {
                     self.allocator.free(buf);
                     self.crypto_retx_handshake = null;
