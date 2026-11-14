@@ -33,6 +33,9 @@ paths = [
   '''tests/test_tls_key_schedule\.zig$''',
   '''tests/unit/endpoint/test_server\.zig$''',
   '''tests/unit/endpoint/test_handshake_integration\.zig$''',
+  # PEM wipe/leak tests: private-key HEADERS around the base64 of "ABCDEF..."
+  # (synthetic bytes, no key material) and deliberately malformed bodies.
+  '''tests/test_pem\.zig$''',
   # Zig build artifacts (not source)
   '''\.zig-cache/.*''',
   '''zig-out/.*''',

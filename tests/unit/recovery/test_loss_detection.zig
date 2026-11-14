@@ -351,8 +351,9 @@ test "boundary: isPacketThresholdLost with pn = 0" {
 }
 
 test "boundary: timeThresholdNs with zero RTT" {
+    // RFC 9002 §6.1.2: never below kGranularity (SONNY-6454; was 0).
     const threshold = LossDetector.timeThresholdNs(0, 0);
-    try testing.expectEqual(@as(u64, 0), threshold);
+    try testing.expectEqual(LossDetector.k_granularity_ns, threshold);
 }
 
 test "boundary: timeThresholdNs with maximum u64 RTT" {

@@ -18,12 +18,16 @@ test "stream: overlapping segments prefer earliest arrival for duplicate bytes" 
 
     // Push first segment [0..5) = "hello"
     try c.pushStreamFrame(0, 0, "hello", false);
-    // Now overlapping segment [3..8) = "loXXX" should not regress already-read bytes
-    try c.pushStreamFrame(0, 3, "loXXX", false);
+    // Now overlapping segment [3..8) = "ZZXXX": its first two bytes must not
+    // regress already-received bytes, and its last three are new stream
+    // data that must be delivered (RFC 9000 §2.2). v0.1.49 dropped the whole
+    // segment because it started below the received offset, losing "XXX"
+    // (SONNY-6475).
+    try c.pushStreamFrame(0, 3, "ZZXXX", false);
 
     var buf: [16]u8 = undefined;
     const n = try c.readStream(0, &buf);
-    try std.testing.expectEqualStrings("hello", buf[0..n]);
+    try std.testing.expectEqualStrings("helloXXX", buf[0..n]);
 }
 
 test "stream: FIN before data gap holds completion until hole filled" {

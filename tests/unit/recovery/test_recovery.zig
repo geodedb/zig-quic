@@ -484,8 +484,13 @@ test "onLossTimeExpired detects time threshold losses" {
     rec.rtt.smoothed_rtt_ns = 50_000_000; // 50ms
     rec.rtt.latest_rtt_ns = 50_000_000;
 
-    // Send packet at time 1000
+    // RFC 9002 §6.1: a packet is lost only once a later packet has been
+    // acknowledged. PN 2 is acknowledged right away (PN 1 is not yet past
+    // the time threshold); the loss timer then finds PN 1 lost by time
+    // (SONNY-6454: the timer used to declare loss with nothing acknowledged).
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
+    try rec.onPacketSent(.Initial, 2, 1200, true, 2000);
+    try testing.expectEqual(@as(usize, 0), rec.onAckReceived(.Initial, &[_]u64{2}, 0, 3000).bytes_lost);
 
     // Time threshold is 1.125 * 50ms = 56.25ms
     // Expire after threshold
@@ -502,7 +507,13 @@ test "onLossTimeExpired marks packets as declared_lost" {
     rec.rtt.smoothed_rtt_ns = 50_000_000;
     rec.rtt.latest_rtt_ns = 50_000_000;
 
+    // RFC 9002 §6.1: a packet is lost only once a later packet has been
+    // acknowledged. PN 2 is acknowledged right away (PN 1 is not yet past
+    // the time threshold); the loss timer then finds PN 1 lost by time
+    // (SONNY-6454: the timer used to declare loss with nothing acknowledged).
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
+    try rec.onPacketSent(.Initial, 2, 1200, true, 2000);
+    try testing.expectEqual(@as(usize, 0), rec.onAckReceived(.Initial, &[_]u64{2}, 0, 3000).bytes_lost);
 
     const bytes_lost = rec.onLossTimeExpired(60_000_000);
 
@@ -519,7 +530,13 @@ test "onLossTimeExpired reduces cwnd on loss" {
     rec.rtt.latest_rtt_ns = 50_000_000;
     rec.cc.cwnd = 50000;
 
+    // RFC 9002 §6.1: a packet is lost only once a later packet has been
+    // acknowledged. PN 2 is acknowledged right away (PN 1 is not yet past
+    // the time threshold); the loss timer then finds PN 1 lost by time
+    // (SONNY-6454: the timer used to declare loss with nothing acknowledged).
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
+    try rec.onPacketSent(.Initial, 2, 1200, true, 2000);
+    try testing.expectEqual(@as(usize, 0), rec.onAckReceived(.Initial, &[_]u64{2}, 0, 3000).bytes_lost);
 
     _ = rec.onLossTimeExpired(60_000_000);
 

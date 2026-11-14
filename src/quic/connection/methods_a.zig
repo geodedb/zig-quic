@@ -240,6 +240,7 @@ pub fn bind(comptime Connection: type) type {
             self.initial_keys_dropped = true;
             self.initial_rx_keys = null;
             self.initial_tx_keys = null;
+            self.discardSpaceRecovery(.Initial);
             self.handshake_done_sent = true;
         }
 
@@ -887,7 +888,8 @@ pub fn bind(comptime Connection: type) type {
 
             logger.debugPrint("[CONN-PTR-PUSH] conn=0x{x} stream_id={}\n", .{ @intFromPtr(self), stream_id });
             logger.debugPrint("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{ stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0 });
-            if (stream_id == 0 and self.stream_recv_state == .ResetRead) return; // ignore stream 0 data after RESET_STREAM
+            // Stream 0 after RESET_STREAM is handled with every other stream
+            // below, so a final-size violation is still detected (SONNY-6486).
 
             logger.debugPrint("\n=== PUSH_STREAM_FRAME ENTRY ===\n", .{});
             logger.debugPrint("stream_id={}, offset={}, len={}, fin={}, role={}\n", .{ stream_id, offset, data.len, fin, self.role });
@@ -897,9 +899,20 @@ pub fn bind(comptime Connection: type) type {
             // If exceeded, this is a STREAM_LIMIT_ERROR (0x04) per RFC 9000 §20.
             try self.validatePeerStreamLimit(stream_id);
 
+            // Data for a retired stream was already delivered; the frame is
+            // still acknowledged by the caller (SONNY-6478).
+            if (!self.admitStream(stream_id)) return;
+
             logger.debugPrint("Calling ensureStreamRx({})...\n", .{stream_id});
             const s = self.ensureStreamRx(stream_id);
             logger.debugPrint("After ensureStreamRx: streams_rx now has {} entries\n", .{self.streams_rx.count()});
+            // RFC 9000 §4.5: data past a known final size, or a FIN with a
+            // different one, is FINAL_SIZE_ERROR, also once the stream was
+            // reset or fully read (SONNY-6486).
+            if (s.fin_off) |known| {
+                const frame_end = std.math.add(u64, offset, @as(u64, data.len)) catch return error.FinalSizeError;
+                if (frame_end > known or (fin and frame_end != known)) return error.FinalSizeError;
+            }
             if (s.state == .ResetRead or s.state == .DataRead) return;
 
             // RFC 9000 §4.1-§4.2: enforce receive-side flow control. Without this
@@ -991,6 +1004,9 @@ pub fn bind(comptime Connection: type) type {
             _ = self.app_echo_sent; // Suppress unused field warning
             // Update connection RX accounting
             self.conn_recv_total +%= data.len;
+            // A FIN arriving after the application read everything finishes
+            // the receive side (RFC 9000 §3.2 Data Read).
+            if (s.state.terminal()) self.maybeRetireStream(stream_id);
             // PHASE 57 PART 11: Flow control is now handled in readStream() using quinn-style calculation
             // (max_stream_data = bytes_consumed + receive_window)
             // We no longer expand windows here based on recv_off, as that conflicts with the quinn approach.
@@ -1210,9 +1226,12 @@ pub fn bind(comptime Connection: type) type {
             ) catch 0;
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
+                const sent_pn = self.pn_app_tx;
                 _ = self.send(pkt) catch |err| {
                     logger.warn("sendControlFrames send failed: {s}", .{@errorName(err)});
                 };
+                // Resent with current values if lost (RFC 9000 §13.3).
+                self.noteControlPacket(sent_pn, frames_bytes);
                 self.onShortHeaderPacketSent(pkt.len, true);
             }
         }
@@ -1318,12 +1337,19 @@ pub fn bind(comptime Connection: type) type {
                 self.last_sent_max_data = self.local_max_data;
                 wrote = true;
             }
+            // Stream-count credit returned by retired streams rides along when
+            // a packet goes out anyway; otherwise it waits for half the limit
+            // (SONNY-6478).
+            if (!wrote) return self.maybeSendMaxStreams(false);
             if (self.local_max_streams_bidi > self.last_sent_max_streams_bidi) {
                 _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
                 self.last_sent_max_streams_bidi = self.local_max_streams_bidi;
-                wrote = true;
             }
-            if (wrote) sendControlFrames(self, frames.items);
+            if (self.local_max_streams_uni > self.last_sent_max_streams_uni) {
+                _ = (frame.Frame{ .max_streams_uni = .{ .max = self.local_max_streams_uni } }).write(w) catch 0;
+                self.last_sent_max_streams_uni = self.local_max_streams_uni;
+            }
+            sendControlFrames(self, frames.items);
         }
     };
 }

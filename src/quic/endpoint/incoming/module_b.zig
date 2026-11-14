@@ -187,6 +187,7 @@ fn processHandshakeResolvedWithHeader(
         conn.*.initial_keys_dropped = true;
         conn.*.initial_rx_keys = null;
         conn.*.initial_tx_keys = null;
+        conn.*.discardSpaceRecovery(.Initial);
         conn.*.pto_initial_active = false;
         conn.*.pto_initial_id = 0;
         conn.*.pto_initial_count = 0;
@@ -436,6 +437,7 @@ fn processHandshakeResolvedWithHeader(
         if (conn.*.hs_rx_keys != null or conn.*.hs_tx_keys != null or conn.*.crypto_retx_handshake != null or conn.*.pto_handshake_active) {
             conn.*.hs_rx_keys = null;
             conn.*.hs_tx_keys = null;
+            conn.*.discardSpaceRecovery(.Handshake);
             if (conn.*.crypto_retx_handshake) |buf| {
                 ctx.allocator.free(buf);
                 conn.*.crypto_retx_handshake = null;

@@ -245,6 +245,17 @@ fn lookupHosts(host: []const u8, port: u16, prefer_ipv6: bool) ?conn_mod.SockAdd
 /// - "server4"/"server" -> resolves from /etc/hosts or defaults to test IP
 /// - "server6" -> resolves from /etc/hosts or defaults to test IPv6
 /// - IPv4 / IPv6 literals (IPv6 must use bracket form in hostport)
+/// - any other name listed in the first 8 KiB of /etc/hosts
+///
+/// Limitations: there is NO DNS resolution (the resolver reads /etc/hosts
+/// directly, without an `Io` instance), and IPv6 zone ids ("fe80::1%eth0")
+/// are not supported. Callers that need either should resolve the name
+/// themselves and pass a numeric literal.
+///
+/// Errors: `error.InvalidAddress` for malformed input (missing or bad port,
+/// unbracketed IPv6, characters not allowed in a host name),
+/// `error.UnsupportedZoneId` for a zone id, `error.HostNotFound` for a
+/// well-formed name that is not in /etc/hosts.
 pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
     _ = proto;
     const hp = try splitHostPort(hostport);
@@ -255,6 +266,9 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     if (std.Io.net.IpAddress.parse(host, port)) |addr| {
         return netAddressToSockAddr(addr);
     } else |_| {}
+
+    if (std.mem.indexOfScalar(u8, host, '%') != null) return error.UnsupportedZoneId;
+    if (!isHostName(host)) return error.InvalidAddress;
 
     if (std.mem.eql(u8, host, "localhost")) {
         return conn_mod.SockAddr.ipv4(127, 0, 0, 1, port);
@@ -279,7 +293,16 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     if (lookupHosts(host, port, false)) |resolved| return resolved;
     if (lookupHosts(host, port, true)) |resolved| return resolved;
 
-    // Final fallback: try numeric IP parse (DNS resolution requires Io instance).
-    const resolved = std.Io.net.IpAddress.parse(host, port) catch return error.InvalidAddress;
-    return netAddressToSockAddr(resolved);
+    // No DNS fallback (it would need an Io instance).
+    return error.HostNotFound;
+}
+
+/// Letters, digits, '-', '_' and '.', at most 253 bytes (RFC 1123 length).
+fn isHostName(host: []const u8) bool {
+    if (host.len == 0 or host.len > 253) return false;
+    for (host) |ch| switch (ch) {
+        'a'...'z', 'A'...'Z', '0'...'9', '-', '_', '.' => {},
+        else => return false,
+    };
+    return true;
 }

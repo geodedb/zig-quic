@@ -563,6 +563,7 @@ pub fn installApplicationKeys(
     conn.initial_keys_dropped = true;
     conn.initial_rx_keys = null;
     conn.initial_tx_keys = null;
+    conn.discardSpaceRecovery(.Initial);
 
     // RFC 9001 §4.1.2: Server MUST wait until peer Finished is received before dropping handshake keys.
     // Client can drop immediately after sending its Finished.
@@ -583,6 +584,7 @@ pub fn installApplicationKeys(
         logger.debugPrint("  {s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (conn.role == .Server) "Server" else "Client", conn.peer_finished_verified });
         conn.hs_rx_keys = null;
         conn.hs_tx_keys = null;
+        conn.discardSpaceRecovery(.Handshake);
         if (conn.crypto_retx_handshake) |buf| {
             conn.allocator.free(buf);
             conn.crypto_retx_handshake = null;
@@ -1468,6 +1470,10 @@ pub fn setupClientTransportParams(
     // Encode UDP payload and flow-control limits from local defaults (RFC 9000 §14.1, §4.1, §4.6)
     tpp.max_udp_payload_size = advertisedMaxUdpPayload(quic_cfg);
     tpp.initial_max_data = conn.local_max_data;
+    // RFC 9000 §18.2: advertise our ACK delay parameters when not the
+    // defaults (3, 25 ms) the peer otherwise assumes (SONNY-6486).
+    if (conn.local_ack_delay_exponent != 3) tpp.ack_delay_exponent = conn.local_ack_delay_exponent;
+    if (conn.local_max_ack_delay_ms != 25) tpp.max_ack_delay = conn.local_max_ack_delay_ms;
     tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
     tpp.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
     tpp.initial_max_stream_data_uni = conn.local_max_stream_data;
@@ -1537,6 +1543,10 @@ pub fn setupServerTransportParams(
 
     // Set flow control limits from connection defaults (RFC 9000 §4.1, §4.6)
     tpp.initial_max_data = conn.local_max_data;
+    // RFC 9000 §18.2: advertise our ACK delay parameters when not the
+    // defaults (3, 25 ms) the peer otherwise assumes (SONNY-6486).
+    if (conn.local_ack_delay_exponent != 3) tpp.ack_delay_exponent = conn.local_ack_delay_exponent;
+    if (conn.local_max_ack_delay_ms != 25) tpp.max_ack_delay = conn.local_max_ack_delay_ms;
     tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
     tpp.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
     tpp.initial_max_stream_data_uni = conn.local_max_stream_data;

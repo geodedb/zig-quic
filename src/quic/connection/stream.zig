@@ -46,10 +46,6 @@ pub const Segment = struct {
     data: []u8,
 };
 
-fn segmentLessThan(_: void, lhs: Segment, rhs: Segment) bool {
-    return lhs.off < rhs.off;
-}
-
 /// Stream receive state - handles out-of-order delivery and reassembly.
 /// RFC 9000 §3: Stream States
 pub const StreamRx = struct {
@@ -78,6 +74,10 @@ pub const StreamRx = struct {
     // per-stream contribution to connection-level flow control.
     buffered_bytes: u64 = 0,
     highest_off: u64 = 0,
+    /// Diagnostic counter (SONNY-6475): buffered segments examined by
+    /// insert() and tryDrain(). Lets tests bound the reassembly work per
+    /// received packet.
+    reassembly_steps: u64 = 0,
 
     pub fn init() StreamRx {
         return .{
@@ -95,6 +95,7 @@ pub const StreamRx = struct {
             .fc_dirty = false,
             .buffered_bytes = 0,
             .highest_off = 0,
+            .reassembly_steps = 0,
         };
     }
 
@@ -139,6 +140,8 @@ pub const StreamRx = struct {
             if (known != final_off) return error.FinalSizeError;
         }
         if (final_off < self.recv_off) return error.FinalSizeError;
+        // RFC 9000 §4.5: below data already received (SONNY-6486).
+        if (final_off < self.highest_off) return error.FinalSizeError;
         self.fin_off = final_off;
         self.refreshState();
     }
@@ -155,6 +158,9 @@ pub const StreamRx = struct {
             if (known != final_size) return error.FinalSizeError;
         }
         if (final_size < self.recv_off) return error.FinalSizeError;
+        // Below data already received, buffered or not (SONNY-6486: a final
+        // size cutting through a buffered segment was accepted).
+        if (final_size < self.highest_off) return error.FinalSizeError;
         self.fin_off = final_size;
         self.state = .ResetRead;
     }
@@ -169,46 +175,81 @@ pub const StreamRx = struct {
         }
     }
 
-    /// Insert a data segment for potential reassembly.
+    /// Index of the first buffered segment starting at or after `off`.
+    /// `bufs` is kept sorted by offset.
+    fn segmentLowerBound(self: *StreamRx, off: u64) usize {
+        var lo: usize = 0;
+        var hi: usize = self.bufs.items.len;
+        while (lo < hi) {
+            self.reassembly_steps +%= 1;
+            const mid = lo + (hi - lo) / 2;
+            if (self.bufs.items[mid].off < off) lo = mid + 1 else hi = mid;
+        }
+        return lo;
+    }
+
+    /// Buffer a data segment for reassembly, keeping `bufs` sorted by
+    /// offset. Bytes already delivered are dropped and an exact
+    /// retransmission of a buffered segment is ignored.
+    ///
+    /// SONNY-6475: segments used to be appended and the whole list sorted
+    /// and walked on every received packet. After one early loss in a large
+    /// window (thousands of segments buffered behind the hole) each packet
+    /// cost a full sort, the receiver fell behind, its socket overflowed, and
+    /// a transfer beyond the initial window slowed to a crawl. Insertion is
+    /// now a binary search and draining touches only the contiguous prefix.
     pub fn insert(self: *StreamRx, alloc: *std.mem.Allocator, off: u64, data: []const u8) void {
         if (self.state == .ResetRead or self.state == .DataRead) return;
+        var seg_off = off;
+        var bytes = data;
+        if (seg_off < self.recv_off) {
+            const delivered = self.recv_off - seg_off;
+            if (delivered >= bytes.len) return;
+            bytes = bytes[@intCast(delivered)..];
+            seg_off = self.recv_off;
+        }
+        if (bytes.len == 0) return;
+        const at = self.segmentLowerBound(seg_off);
+        if (at < self.bufs.items.len) {
+            const next = self.bufs.items[at];
+            if (next.off == seg_off and next.data.len >= bytes.len) return;
+        }
         // store a copy of segment
-        const owned = alloc.alloc(u8, data.len) catch return;
-        @memcpy(owned, data);
-        self.bufs.append(alloc.*, .{ .off = off, .data = owned }) catch {
+        const owned = alloc.alloc(u8, bytes.len) catch return;
+        @memcpy(owned, bytes);
+        self.bufs.insert(alloc.*, at, .{ .off = seg_off, .data = owned }) catch {
             alloc.free(owned);
             return;
         };
-        self.buffered_bytes += data.len;
+        self.buffered_bytes += bytes.len;
     }
 
-    /// Try to drain contiguous segments into the inbox.
+    /// Try to drain contiguous segments into the inbox. Only the sorted
+    /// prefix that starts at or before `recv_off` is examined; overlapping
+    /// segments contribute just their bytes past `recv_off`.
     pub fn tryDrain(self: *StreamRx, alloc: *std.mem.Allocator) void {
-        if (self.bufs.items.len > 1) {
-            std.mem.sort(Segment, self.bufs.items, {}, segmentLessThan);
-        }
-
-        var write_i: usize = 0;
+        var consumed: usize = 0;
         for (self.bufs.items) |seg| {
-            if (seg.off < self.recv_off) {
-                self.buffered_bytes -|= seg.data.len;
-                alloc.free(seg.data);
-            } else if (seg.off == self.recv_off) {
-                self.inbox.appendSlice(alloc.*, seg.data) catch |err| {
+            self.reassembly_steps +%= 1;
+            if (seg.off > self.recv_off) break;
+            const seg_end = seg.off + @as(u64, seg.data.len);
+            if (seg_end > self.recv_off) {
+                const fresh = seg.data[@intCast(self.recv_off - seg.off)..];
+                self.inbox.appendSlice(alloc.*, fresh) catch |err| {
                     logger.err("stream inbox appendSlice failed (OOM): {s}", .{@errorName(err)});
-                    self.bufs.items[write_i] = seg;
-                    write_i += 1;
-                    continue;
+                    break;
                 };
-                self.recv_off +%= seg.data.len;
-                self.buffered_bytes -|= seg.data.len;
-                alloc.free(seg.data);
-            } else {
-                self.bufs.items[write_i] = seg;
-                write_i += 1;
+                self.recv_off = seg_end;
             }
+            self.buffered_bytes -|= seg.data.len;
+            alloc.free(seg.data);
+            consumed += 1;
         }
-        self.bufs.items.len = write_i;
+        if (consumed > 0) {
+            const items = self.bufs.items;
+            std.mem.copyForwards(Segment, items[0 .. items.len - consumed], items[consumed..]);
+            self.bufs.items.len -= consumed;
+        }
         self.refreshState();
     }
 
@@ -228,6 +269,19 @@ pub const StreamTx = struct {
     aborted: bool = false,
     // PHASE 42 PART 10: Per-stream send-side flow control (RFC 9000 §4.2)
     peer_max_stream_data: u64 = 0, // Peer's receive window limit for this stream
+    /// Packets carrying this stream's STREAM frames that are tracked for
+    /// retransmission and not yet acknowledged. With the FIN sent, zero means
+    /// the peer has everything: RFC 9000 §3.1 "Data Recvd" (SONNY-6478).
+    retx_outstanding: u32 = 0,
+
+    /// RFC 9000 §3.1: the send side needs no more state once all data and
+    /// the FIN are acknowledged ("Data Recvd") or the stream was reset.
+    /// RESET_STREAM is not tracked for acknowledgement, so "Reset Sent"
+    /// counts as terminal.
+    pub fn sendTerminal(self: *const StreamTx) bool {
+        if (self.aborted) return true;
+        return self.fin_sent and self.retx_outstanding == 0;
+    }
 
     pub fn canWrite(self: *const StreamTx) !void {
         if (!self.state.canWrite()) return error.StreamStopped;

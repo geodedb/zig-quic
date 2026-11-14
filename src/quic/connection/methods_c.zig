@@ -408,7 +408,13 @@ pub fn bind(comptime Connection: type) type {
 
             // Remove and return a stream from the queue.
             // Uses swapRemove for O(1) dequeue — stream acceptance order is not guaranteed.
-            const stream_id = self.incoming_stream_queue.swapRemove(0);
+            // Skip streams retired since they were queued (SONNY-6478): they
+            // were read to the end and must not get new state.
+            var stream_id = self.incoming_stream_queue.swapRemove(0);
+            while (self.isStreamRetired(stream_id)) {
+                if (self.incoming_stream_queue.items.len == 0) return error.WouldBlock;
+                stream_id = self.incoming_stream_queue.swapRemove(0);
+            }
 
             // Ensure we have RX state for it
             _ = ensureStreamRx(self, stream_id);
@@ -534,8 +540,13 @@ pub fn bind(comptime Connection: type) type {
             if (tp_dec.ack_delay_exponent) |v| {
                 if (v <= 20) self.ack_delay_exponent = @intCast(v); // cap defensively
             }
-            if (tp_dec.max_ack_delay) |v| {
-                // max_ack_delay is in milliseconds (RFC 9000); cap to 4000ms for safety.
+            {
+                // max_ack_delay is in milliseconds; absent means the RFC 9000
+                // §18.2 default of 25 ms. The peer may delay ACKs that long,
+                // so the PTO must include it (RFC 9002 §6.2.1); without it a
+                // peer delaying its ACK triggered a probe that resent the
+                // request (SONNY-6478). Cap to 4000ms for safety.
+                const v = tp_dec.max_ack_delay orelse 25;
                 const capped: u64 = if (v > 4000) 4000 else v;
                 self.max_ack_delay_ms = @intCast(capped);
                 // Feed into recovery RTT estimator (nanoseconds)
