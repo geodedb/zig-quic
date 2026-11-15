@@ -393,7 +393,7 @@ e2e-test-python:
 
 e2e-test-go:
   stage: e2e
-  image: golang:1.27.3
+  image: golang:1.27.4
   tags:
     - company
     - linux
@@ -449,7 +449,7 @@ e2e-test-go:
 
 e2e-test-rust:
   stage: e2e
-  image: rust:1.99
+  image: rust:1.100
   tags:
     - company
     - linux
@@ -893,7 +893,7 @@ fuzz:
 
 security-rust-cargo-audit:
   stage: security
-  image: rust:1.99
+  image: rust:1.100
   tags:
     - company
     - linux
@@ -963,7 +963,7 @@ security-python-safety:
 
 security-go-govulncheck:
   stage: security
-  image: golang:1.27.3
+  image: golang:1.27.4
   tags:
     - company
     - linux
@@ -989,7 +989,7 @@ security-go-govulncheck:
 # Scheduled job to update Go dependencies for interop testing
 update-go-dependencies:
   stage: maintenance
-  image: golang:1.27.3
+  image: golang:1.27.4
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $UPDATE_GO_DEPS == "true"
   before_script:
