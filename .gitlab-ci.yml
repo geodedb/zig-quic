@@ -644,6 +644,12 @@ interop-test:
       # A case passes when the client exits 0 and every requested file
       # arrived intact (the quic-interop-runner checks for handshake and
       # transfer). A failure is reported, not swallowed.
+      #
+      # Every case gets a fresh simulator, as the quic-interop-runner does
+      # (SONNY-6656, NEWGAP-20): reused for the next case, with new endpoint
+      # containers on the same addresses, it forwarded nothing, and every
+      # case after the first failed with a client that never heard from the
+      # server, whichever implementations ran.
       run_case() {
         title="$1"
         server_image="$2"
@@ -652,7 +658,9 @@ interop-test:
         files="$5"
 
         echo "=== Test: ${title} ==="
-        compose rm -fsv server client >/dev/null 2>&1 || true
+        compose down -v >/dev/null 2>&1 || true
+        compose up -d sim
+        wait_for_sim
         rm -f "${SIM_DIR}"/downloads/*
         requests=""
         for f in ${files}; do requests="${requests:+${requests} }https://server4/${f}"; done
@@ -686,9 +694,6 @@ interop-test:
       }
       trap cleanup EXIT
 
-      compose up -d sim
-      wait_for_sim
-
       run_case "Zig server <-> quic-go client (handshake)" "zig-qns:local" "${QUIC_GO_IMAGE}" "handshake" "5000"
       run_case "quic-go server <-> Zig client (handshake)" "${QUIC_GO_IMAGE}" "zig-qns:local" "handshake" "5000"
       run_case "Zig server <-> quic-go client (transfer)" "zig-qns:local" "${QUIC_GO_IMAGE}" "transfer" "5000 10000"
@@ -705,7 +710,6 @@ interop-test:
     paths:
       - examples/interop/quic-network-simulator/logs/
     expire_in: 7 days
-  allow_failure: true
 
 quality-zig-gates:
   stage: test
