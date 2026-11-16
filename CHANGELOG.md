@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.54] - 2026-11-16
+
 ### Fixed
 
 - Lost NEW_CONNECTION_ID frames are sent again (RFC 9000 §13.3; SONNY-6655, NEWGAP-21). The server advertises its first connection IDs in the packet that carries HANDSHAKE_DONE, which was not recorded for control-frame retransmission, and NEW_CONNECTION_ID was resent from no lost packet: when that packet was lost the client held 3 of the server's 7 connection IDs for good. Packets carrying NEW_CONNECTION_ID (the HANDSHAKE_DONE packet, ACK packets) are now recorded like the flow-control frames of SONNY-6486, and a lost one is sent again while the connection ID is not retired; such an ACK packet now counts as ack-eliciting, which it is.
