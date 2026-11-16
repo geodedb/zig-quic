@@ -12,7 +12,7 @@
 //! - Creates and configures UDP sockets
 //! - Supports IPv4 and IPv6
 //! - Non-blocking I/O
-//! - Socket options (SO_REUSEADDR)
+//! - Exclusive binds (no SO_REUSEADDR: a live port cannot be taken over)
 //! - Poll support for event-driven I/O
 //!
 //! Reference: src/quic/endpoint/io.zig contains similar UDP operations
@@ -217,10 +217,6 @@ fn socketPortHost(addr: *const SockAddr) u16 {
     };
 }
 
-fn shouldReuseBindPort(addr: *const SockAddr) bool {
-    return socketPortHost(addr) != 0;
-}
-
 /// UDP transport adapter for production use
 ///
 /// This UDP transport adapter wraps real UDP socket operations, enabling
@@ -262,16 +258,15 @@ pub const UdpTransport = struct {
         const fd: posix.socket_t = @intCast(sock_rc);
         errdefer _ = linux.close(fd);
 
-        var one: i32 = 1;
-        // CANARY: REQ=REQ-QUIC-HC-140; FEATURE="QUIC High-Concurrency Requests"; ASPECT=UniqueEphemeralClientPorts; STATUS=TESTED; TEST=udp_transport_ephemeral_binds_do_not_reuse_live_ports; OWNER=transport; UPDATED=2026-05-28
-        // SO_REUSEADDR is useful for servers rebinding a fixed listen port, but
-        // on Linux it also permits multiple live UDP sockets bound to port 0 to
-        // receive the same ephemeral port. High-fanout clients then receive
-        // packets for each other's connection IDs. Keep reuse scoped to explicit
-        // non-zero bind ports.
-        if (shouldReuseBindPort(&addr)) {
-            _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
-        }
+        // CANARY: REQ=REQ-QUIC-HC-140; FEATURE="QUIC High-Concurrency Requests"; ASPECT=UniqueEphemeralClientPorts; STATUS=TESTED; TEST=udp_transport_ephemeral_binds_do_not_reuse_live_ports; OWNER=transport; UPDATED=2026-11-15
+        // No SO_REUSEADDR. On Linux it lets a second UDP socket bind an
+        // address and port that a live socket holds, and unicast datagrams
+        // then go to the newer socket only: high-fanout clients bound to port
+        // 0 received each other's packets, and a second endpoint on a live
+        // server's port (another process, a restart that overlapped the old
+        // one, another local user) took over its connections, which the
+        // server's application never saw (SONNY-6522). UDP has no TIME_WAIT,
+        // so a closed port can be bound again without it.
         configureSocketBuffersLinux(fd);
         configureEcnSocket(fd, family);
 
@@ -335,10 +330,7 @@ pub const UdpTransport = struct {
         const fd: posix.socket_t = @intCast(sock_rc);
         errdefer _ = std.c.close(fd);
 
-        var one: i32 = 1;
-        if (shouldReuseBindPort(&addr)) {
-            _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
-        }
+        // No SO_REUSEADDR: see the Linux init above (SONNY-6522).
         configureSocketBuffersPosix(fd);
 
         const bind_len: posix.socklen_t = switch (family) {

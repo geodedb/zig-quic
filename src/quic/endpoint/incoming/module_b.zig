@@ -1012,6 +1012,7 @@ pub fn promoteToNextKeys(
     conn.app_rx_secret = next_secret;
     conn.maybeEmitRxKeyUpdateLog(&next_secret);
     conn.rx_key_phase = !conn.rx_key_phase;
+    conn.rx_key_gen += 1;
 
     logger.debugPrint("[PHASE57-HP-PRESERVE] HP key preserved during promotion (not rotated per RFC 9001 §6)\n", .{});
 
