@@ -1345,11 +1345,8 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
     _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
     const frames_data = frames_stream.getWritten();
 
-    // Use peer's SCID as DCID for 1-RTT packet
-    const dcid = if (conn.peer_initial_scid.len > 0)
-        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
-    else
-        &[_]u8{};
+    // The peer's current connection ID, as for every 1-RTT packet.
+    const dcid = conn.shortHeaderDcid();
 
     // Encode and send 1-RTT packet without heap allocation.
     const packet_storage = try conn.packet_pool.checkout();

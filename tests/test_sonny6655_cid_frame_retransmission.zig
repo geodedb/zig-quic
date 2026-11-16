@@ -202,12 +202,15 @@ test "SONNY-6655 a lost NEW_CONNECTION_ID is sent again until the peer has the c
     const target = try std.fmt.bufPrint(&target_buf, "127.0.0.1:{d}", .{relay.front_port});
     const conn = try api.connect(&client_ep, target, "localhost");
     const hs_deadline = nowMs() + 5_000;
-    while (nowMs() < hs_deadline and !serverReady(server.conn.load(.acquire))) _ = client_ep.pollWithStats(1) catch {};
+    // Until the HANDSHAKE_DONE packet has reached the relay and been dropped.
+    while (nowMs() < hs_deadline and !(serverReady(server.conn.load(.acquire)) and @atomicLoad(u32, &relay.down.state.dropped, .acquire) >= 1)) {
+        _ = client_ep.pollWithStats(1) catch {};
+    }
     const sc = server.conn.load(.acquire) orelse return error.NotAccepted;
     try testing.expect(serverReady(sc));
     const issued = Issued.of(sc);
     try testing.expect(issued.n >= 1);
-    const dropped = relay.down.state.dropped;
+    const dropped = @atomicLoad(u32, &relay.down.state.dropped, .acquire);
     try testing.expect(dropped >= 1);
     for (0..issued.n) |i| try testing.expect(!hasPeerCid(conn, issued.seq[i], issued.cid[i][0..issued.len[i]]));
 

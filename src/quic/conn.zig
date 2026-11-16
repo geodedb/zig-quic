@@ -1105,6 +1105,18 @@ pub const Connection = struct {
     stateless_reset_base: [32]u8 = [_]u8{0} ** 32,
     /// Highest retire_prior_to value we have advertised (monotonic). Used when emitting NEW_CONNECTION_ID.
     retired_prior_to: u64 = 0,
+    /// Largest Retire Prior To the peer sent (RFC 9000 §5.1.2): its
+    /// connection IDs numbered below it are retired.
+    peer_retire_prior_to: u64 = 0,
+    /// The peer's initial connection ID (sequence 0, `peer_initial_scid`) is
+    /// retired; short headers use a connection ID from NEW_CONNECTION_ID.
+    peer_initial_cid_retired: bool = false,
+    /// Sequence numbers of peer connection IDs retired whose
+    /// RETIRE_CONNECTION_ID is not sent yet (SONNY-6655). Twice our
+    /// active_connection_id_limit (peer_cids.len), as RFC 9000 §5.1.2
+    /// suggests; more is a CONNECTION_ID_LIMIT_ERROR.
+    pending_retire_cids: [16]u64 = undefined,
+    pending_retire_len: u8 = 0,
 
     // --- ACK delay measurement (per space) ---
     last_ack_eliciting_rx_initial_ns: u64 = 0,
@@ -1502,6 +1514,9 @@ pub const Connection = struct {
         self.pending_new_cid = std.bit_set.IntegerBitSet(8).initEmpty();
         self.stateless_reset_base = [_]u8{0} ** 32;
         self.retired_prior_to = 0;
+        self.peer_retire_prior_to = 0;
+        self.peer_initial_cid_retired = false;
+        self.pending_retire_len = 0;
         self.issued_cids = 1;
         // Initialize flow-control defaults.
         // 2026-04-28: bumped from 2 MiB / 10 MiB to 16 MiB / 256 MiB so
@@ -1832,7 +1847,27 @@ pub const Connection = struct {
     /// MUST close with CONNECTION_ID_LIMIT_ERROR). We advertise a limit equal to
     /// peer_cids.len, so a real CID that cannot fit without evicting a still-live
     /// entry is a protocol violation rather than something to silently absorb.
+    ///
+    /// RFC 9000 §5.1.2: peer connection IDs below an increased Retire Prior
+    /// To, the initial one (sequence 0) included, are no longer used and are
+    /// queued for RETIRE_CONNECTION_ID (`flushPendingRetireConnectionIds`);
+    /// a connection ID that arrives below the Retire Prior To already
+    /// received is retired at once. More retirements pending than
+    /// `pending_retire_cids` holds is a CONNECTION_ID_LIMIT_ERROR (SONNY-6655).
     pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, connection_id: []const u8, stateless_reset_token: [16]u8) error{ConnectionIdLimitError}!void {
+        if (sequence < self.peer_retire_prior_to) return self.queueRetireCid(sequence);
+        if (retire_prior_to > self.peer_retire_prior_to) {
+            if (!self.peer_initial_cid_retired) {
+                try self.queueRetireCid(0);
+                self.peer_initial_cid_retired = true;
+            }
+            for (&self.peer_cids) |*pc| {
+                if (!pc.in_use or pc.sequence >= retire_prior_to) continue;
+                if (pc.sequence != 0) try self.queueRetireCid(pc.sequence);
+                pc.* = .{};
+            }
+            self.peer_retire_prior_to = retire_prior_to;
+        }
         // Retire tokens by explicit sequence; list order is not significant.
         var i: usize = 0;
         while (i < self.reset_tokens.items.len) {
@@ -1861,14 +1896,6 @@ pub const Connection = struct {
                 // Surface it rather than silently dropping the capability.
                 logger.warn("failed to record stateless-reset token for seq {d}: {s}", .{ sequence, @errorName(err) });
             };
-        }
-
-        // Retire peer CIDs below retire_prior_to.
-        i = 0;
-        while (i < self.peer_cids.len) : (i += 1) {
-            if (self.peer_cids[i].in_use and self.peer_cids[i].sequence < retire_prior_to) {
-                self.peer_cids[i] = .{};
-            }
         }
 
         const cid_len = @min(connection_id.len, self.peer_cids[0].cid.bytes.len);
@@ -1937,6 +1964,16 @@ pub const Connection = struct {
             }
             if (have_best) self.active_peer_cid_sequence = best_seq;
         }
+    }
+
+    /// Queue a RETIRE_CONNECTION_ID for the peer's connection ID `sequence`.
+    fn queueRetireCid(self: *Connection, sequence: u64) error{ConnectionIdLimitError}!void {
+        for (self.pending_retire_cids[0..self.pending_retire_len]) |s| {
+            if (s == sequence) return;
+        }
+        if (self.pending_retire_len == self.pending_retire_cids.len) return error.ConnectionIdLimitError;
+        self.pending_retire_cids[self.pending_retire_len] = sequence;
+        self.pending_retire_len += 1;
     }
 
     /// Returns the currently active peer-provided CID (NEW_CONNECTION_ID) if available.
@@ -2430,6 +2467,7 @@ pub const Connection = struct {
     pub const maybeSendMaxStreams = methods_retire.maybeSendMaxStreams;
     pub const noteControlPacket = methods_ctrl.noteControlPacket;
     pub const onAckControlFrames = methods_ctrl.onAckControlFrames;
+    pub const flushPendingRetireConnectionIds = methods_ctrl.flushPendingRetireConnectionIds;
     pub const deinitControlTracking = methods_ctrl.deinitControlTracking;
     pub const onStreamDataBlocked = methods_ctrl.onStreamDataBlocked;
 };

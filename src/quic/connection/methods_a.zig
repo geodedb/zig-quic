@@ -246,6 +246,10 @@ pub fn bind(comptime Connection: type) type {
             );
             const pkt = packet_storage[0..pkt_len];
             _ = try self.send(pkt);
+            // MAX_DATA, MAX_STREAMS and NEW_CONNECTION_ID are resent if this
+            // packet is lost (RFC 9000 §13.3; SONNY-6655), HANDSHAKE_DONE
+            // through handshake_done_pn.
+            self.noteControlPacket(sent_pn, frames_list.items);
             self.onShortHeaderPacketSent(pkt.len, true);
             self.handshake_done_pn = sent_pn;
 

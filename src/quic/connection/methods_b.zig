@@ -1991,9 +1991,10 @@ pub fn bind(comptime Connection: type) type {
         /// Destination Connection ID for short-header packets is the peer-chosen ID.
         /// Prefer the Initial SCID observed from peer, including the valid
         /// zero-length case. Peer-provided NEW_CONNECTION_ID values are a fallback
-        /// only before the Initial SCID has been latched.
+        /// only before the Initial SCID has been latched, or once the peer
+        /// retired it with Retire Prior To (RFC 9000 §5.1.2; SONNY-6655).
         pub fn shortHeaderDcid(self: *Connection) []const u8 {
-            const result = if (self.peer_initial_scid_set or self.peer_initial_scid.len > 0)
+            const result = if (!self.peer_initial_cid_retired and (self.peer_initial_scid_set or self.peer_initial_scid.len > 0))
                 self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]
             else if (self.activePeerCid()) |peer_cid|
                 peer_cid
