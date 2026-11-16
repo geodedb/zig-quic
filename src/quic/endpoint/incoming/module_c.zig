@@ -352,7 +352,7 @@ pub fn processShortHeaderResolved(
     // Released before processFrames() which calls pushStreamFrame() that acquires
     // conn.mu internally (Zig mutexes are non-recursive).
     const pn_lock_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
-    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    conn.lockForEndpoint();
     if (ctx.short_header_timing) |timing| {
         timing.conn_lock_wait_ns += elapsedTimingNsSince(pn_lock_start_ns);
     }
@@ -482,7 +482,7 @@ pub fn processShortHeaderResolved(
     // GAP-0200: Re-acquire conn.mu for post-frame state mutations and ACK
     // generation (buildAckApp reads PnWindow / writes ack_ranges_buf).
     const post_lock_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
-    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    conn.lockForEndpoint();
     if (ctx.short_header_timing) |timing| {
         timing.conn_lock_wait_ns += elapsedTimingNsSince(post_lock_start_ns);
     }

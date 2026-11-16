@@ -192,7 +192,7 @@ fn processHandshakeResolvedWithHeader(
     defer handshake_integration.clearCurrentConnection();
 
     // Update packet number tracking (under conn.mu to prevent PnWindow race)
-    conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    conn.*.lockForEndpoint();
     conn.*.trackRecvPnHandshake(decrypted.packet_number);
     conn.*.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
@@ -379,7 +379,7 @@ fn processHandshakeResolvedWithHeader(
             const w = @import("compat").arrayListWriter(&frames_buf, ctx.allocator.*);
 
             // GAP-0200: Lock conn.mu for ACK generation (reads PnWindow, writes ack_ranges_buf)
-            conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            conn.*.lockForEndpoint();
             const ack_desc = conn.*.buildAckHandshake();
             const ack_ecn = conn.*.getAckEcn(.Handshake);
             const ack_delay = conn.*.getAckDelayEncoded(.Handshake, now_ns);
@@ -449,7 +449,7 @@ fn processHandshakeResolvedWithHeader(
         _ = (frame.Frame{ .handshake_done = {} }).write(dw) catch 0;
         // A 1-RTT packet, sent while the application may already be sending
         // on this connection: under Connection.mu (SONNY-4379).
-        conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        conn.*.lockForEndpoint();
         defer conn.*.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         conn.*.sendControlFrames(done_frames.items);
     }

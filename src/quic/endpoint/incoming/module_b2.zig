@@ -89,7 +89,7 @@ pub fn processFrames(
             // Signal CONNECTION_CLOSE with FRAME_ENCODING_ERROR (0x07) for any
             // frame decode failure (Unsupported, Truncated, FrameTooLarge).
             // Under Connection.mu, as every 1-RTT send (SONNY-4379).
-            conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            conn.lockForEndpoint();
             conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
                 logger.debugPrint("Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
             };

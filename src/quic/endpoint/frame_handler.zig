@@ -36,7 +36,7 @@ const max_streams_limit: u64 = 1 << 60;
 /// (and its AEAD nonce) with a packet an application thread sends (SONNY-4379).
 fn sendCloseLocked(ctx: *FrameContext, code: u64, reason: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
-    ctx.conn.mu.lockUncancelable(io);
+    ctx.conn.lockForEndpoint();
     defer ctx.conn.mu.unlock(io);
     return ctx.conn.sendConnectionClose(code, reason);
 }
@@ -226,7 +226,7 @@ pub fn handleDatagram(
     // Optional DATAGRAM echo response (test/debugging feature)
     if (ctx.cfg.enable_datagram) {
         // Every 1-RTT packet is sent under Connection.mu (SONNY-4379).
-        ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        ctx.conn.lockForEndpoint();
         defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (ctx.conn.app_tx_keys) |txk| {
             var fb: std.ArrayList(u8) = .empty;
@@ -286,7 +286,7 @@ pub fn handleAck(
         if (!ctx.conn.mu.tryLock()) return .{};
         locked = true;
     } else {
-        ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        ctx.conn.lockForEndpoint();
         locked = true;
     }
 
@@ -474,7 +474,7 @@ pub fn handleDataBlocked(ctx: *FrameContext, db: frame.DataBlocked) FrameResult 
     _ = db;
     // The MAX_DATA answer is a 1-RTT packet: send it under Connection.mu like
     // every other (SONNY-4379).
-    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    ctx.conn.lockForEndpoint();
     defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     // Expand the connection-level receive window by the initial window size.
     // This ensures the peer can always send more data.
@@ -503,7 +503,7 @@ pub fn handleDataBlocked(ctx: *FrameContext, db: frame.DataBlocked) FrameResult 
 pub fn handleStreamDataBlocked(ctx: *FrameContext, sdb: frame.StreamDataBlocked) FrameResult {
     const is_uni = (sdb.stream_id & 0x2) != 0;
     if (is_uni and !ctx.conn.isPeerInitiatedStream(sdb.stream_id)) return closeStreamStateError(ctx);
-    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    ctx.conn.lockForEndpoint();
     defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     ctx.conn.onStreamDataBlocked(sdb.stream_id, sdb.limit);
     return .{ .saw_ack_eliciting = true };
@@ -521,7 +521,7 @@ pub fn handlePathChallenge(
     // PATH_RESPONSE is a 1-RTT packet: send it under Connection.mu like
     // every other, or it can share a packet number (and AEAD nonce) with a
     // packet an application thread sends (SONNY-4379).
-    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    ctx.conn.lockForEndpoint();
     defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     if (ctx.conn.app_tx_keys) |txk| {
         var fb: std.ArrayList(u8) = .empty;
@@ -658,7 +658,7 @@ pub fn processFrame(ctx: *FrameContext, fr: frame.Frame) !FrameResult {
             // RFC 9000 §19.14: the peer has reached its stream limit. Send any
             // credit returned by retired streams now rather than waiting for
             // the batch threshold (SONNY-6478).
-            ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            ctx.conn.lockForEndpoint();
             defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             ctx.conn.maybeSendMaxStreams(true);
             return .{ .saw_ack_eliciting = true };

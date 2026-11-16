@@ -532,7 +532,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
             // Every 1-RTT packet is sent under Connection.mu (SONNY-4379).
             const io = std.Io.Threaded.global_single_threaded.io();
-            self.mu.lockUncancelable(io);
+            self.lockForSend();
             defer self.mu.unlock(io);
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
@@ -676,7 +676,8 @@ pub fn bind(comptime Connection: type) type {
         /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
         /// GAP-0200: Thread-safe - acquires connection mutex
         pub fn writeStream(self: *Connection, id: u64, data: []const u8, fin: bool) !usize {
-            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            // Defers to a waiting receive path (SONNY-6673).
+            self.lockForSend();
             defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             return self.writeStreamUnlocked(id, data, fin);
         }
