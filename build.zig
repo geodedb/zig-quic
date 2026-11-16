@@ -1085,6 +1085,23 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "rx_packet_protection")) return;
 
+    // SONNY-6654: no packet number (and AEAD nonce) is used twice while the
+    // handshake completes and the application writes. Real endpoints over a
+    // loopback UDP relay that records the server's 1-RTT datagrams.
+    const test_sonny6654 = addTst(b, testlog_mod, compat_mod, "tests/test_sonny6654_handshake_pn_serialization.zig", target, optimize);
+    test_sonny6654.root_module.addImport("quic_api", quic_api_mod);
+    test_sonny6654.root_module.addImport("quic_config", quic_config_mod);
+    test_sonny6654.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_sonny6654.root_module.addImport("test_certs", test_certs_mod);
+    test_sonny6654.root_module.addImport("quic_build_options", build_options_mod);
+    const run_test_sonny6654 = b.addRunArtifact(test_sonny6654);
+    const sonny6654_step = b.step("test-sonny6654-handshake-pn", "Test that no packet number is used twice while the handshake completes and the application writes");
+    sonny6654_step.dependOn(&run_test_sonny6654.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "sonny6654_handshake_pn")) {
+        test_step.dependOn(&run_test_sonny6654.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "sonny6654_handshake_pn")) return;
+
     // SONNY-6454: loss detection and persistent congestion per RFC 9002.
     const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
     test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);

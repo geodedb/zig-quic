@@ -94,6 +94,65 @@ pub fn observeGenerations(st: *RuleState, info: ShortInfo, g: u32) bool {
     return true;
 }
 
+/// Reads the key phase and packet number of a 1-RTT packet by removing
+/// header protection with the sender's HP key (RFC 9001 §5.4) and decoding
+/// the packet number against `largest`, the largest decoded so far (RFC 9000
+/// Appendix A.3), which it updates. Null when `pkt` is not a short header
+/// long enough to carry a header protection sample.
+pub fn decodeShortHeader(hp_key: [16]u8, dcid_len: usize, pkt: []const u8, largest: *?u64) ?ShortInfo {
+    if (pkt.len == 0 or (pkt[0] & 0x80) != 0) return null;
+    const pn_off = 1 + dcid_len;
+    if (pkt.len < pn_off + 4 + 16) return null;
+    const aes = std.crypto.core.aes.Aes128.initEnc(hp_key);
+    var mask: [16]u8 = undefined;
+    aes.encrypt(&mask, pkt[pn_off + 4 ..][0..16]);
+    const first = pkt[0] ^ (mask[0] & 0x1f);
+    const pn_len: usize = (first & 0x03) + 1;
+    var trunc: u64 = 0;
+    for (0..pn_len) |i| trunc = (trunc << 8) | (pkt[pn_off + i] ^ mask[1 + i]);
+    // The relay sees every packet the sender sends, so its largest is
+    // always current.
+    const expected: u64 = if (largest.*) |l| l + 1 else 0;
+    const win: u64 = @as(u64, 1) << @intCast(pn_len * 8);
+    const hwin = win / 2;
+    var pn = (expected & ~(win - 1)) | trunc;
+    if (pn + hwin <= expected and pn < (@as(u64, 1) << 62) - win) {
+        pn += win;
+    } else if (pn > expected + hwin and pn >= win) {
+        pn -= win;
+    }
+    if (largest.* == null or pn > largest.*.?) largest.* = pn;
+    return .{ .phase = (first & 0x04) != 0, .pn = pn };
+}
+
+/// The first bytes of every 1-RTT datagram a link forwarded, in order,
+/// recorded whether or not the sender's header protection key is known yet:
+/// packets sent while the handshake completes can be read once it is
+/// (SONNY-6654). `head_len` bytes cover the header and the header
+/// protection sample for any connection ID length.
+pub const ShortLog = struct {
+    pub const capacity: usize = 4096;
+    pub const head_len: usize = 64;
+    heads: [capacity][head_len]u8 = undefined,
+    lens: [capacity]usize = undefined,
+    count: std.atomic.Value(usize) = .init(0),
+
+    fn record(self: *ShortLog, pkt: []const u8) void {
+        if (pkt.len == 0 or (pkt[0] & 0x80) != 0) return;
+        const n = self.count.load(.monotonic);
+        if (n >= capacity) return;
+        const len = @min(pkt.len, head_len);
+        @memcpy(self.heads[n][0..len], pkt[0..len]);
+        self.lens[n] = pkt.len;
+        self.count.store(n + 1, .release);
+    }
+
+    /// The recorded head of datagram `i` (at most `head_len` bytes).
+    pub fn head(self: *const ShortLog, i: usize) []const u8 {
+        return self.heads[i][0..@min(self.lens[i], head_len)];
+    }
+};
+
 pub const capture_capacity: usize = 2048;
 pub const max_held: usize = 64;
 
@@ -132,6 +191,9 @@ pub const Link = struct {
     released: std.atomic.Value(usize) = .init(0),
     /// 1-RTT packets of a key generation after the first, forwarded.
     later_gen_forwarded: std.atomic.Value(u32) = .init(0),
+    /// When set, the head of every 1-RTT datagram forwarded is recorded,
+    /// before the sender's keys are published (SONNY-6654).
+    log: ?*ShortLog = null,
 
     /// Publishes the sender's header-protection key and the DCID length of
     /// its short headers, once its 1-RTT keys exist.
@@ -146,29 +208,7 @@ pub const Link = struct {
 
     pub fn decodeShort(self: *Link, pkt: []const u8) ?ShortInfo {
         if (!self.hp_ready.load(.acquire)) return null;
-        if (pkt.len == 0 or (pkt[0] & 0x80) != 0) return null;
-        const pn_off = 1 + self.dcid_len;
-        if (pkt.len < pn_off + 4 + 16) return null;
-        const aes = std.crypto.core.aes.Aes128.initEnc(self.hp_key);
-        var mask: [16]u8 = undefined;
-        aes.encrypt(&mask, pkt[pn_off + 4 ..][0..16]);
-        const first = pkt[0] ^ (mask[0] & 0x1f);
-        const pn_len: usize = (first & 0x03) + 1;
-        var trunc: u64 = 0;
-        for (0..pn_len) |i| trunc = (trunc << 8) | (pkt[pn_off + i] ^ mask[1 + i]);
-        // RFC 9000 Appendix A.3 packet number decoding. The relay sees every
-        // packet the sender sends, so its largest is always current.
-        const expected: u64 = if (self.largest_pn) |l| l + 1 else 0;
-        const win: u64 = @as(u64, 1) << @intCast(pn_len * 8);
-        const hwin = win / 2;
-        var pn = (expected & ~(win - 1)) | trunc;
-        if (pn + hwin <= expected and pn < (@as(u64, 1) << 62) - win) {
-            pn += win;
-        } else if (pn > expected + hwin and pn >= win) {
-            pn -= win;
-        }
-        if (self.largest_pn == null or pn > self.largest_pn.?) self.largest_pn = pn;
-        return .{ .phase = (first & 0x04) != 0, .pn = pn };
+        return decodeShortHeader(self.hp_key, self.dcid_len, pkt, &self.largest_pn);
     }
 
     fn generationOf(self: *Link, info: ShortInfo) u32 {
@@ -189,6 +229,7 @@ pub const Link = struct {
             self.state.dropped += 1;
             return false;
         }
+        if (self.log) |l| l.record(pkt);
         const info = self.decodeShort(pkt) orelse return true;
         if (self.capture.load(.acquire) and pkt.len <= capture_capacity) {
             @memcpy(self.captured[0..pkt.len], pkt);
