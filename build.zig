@@ -1122,6 +1122,30 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "sonny6655_cid_retransmission")) return;
 
+    // SONNY-6656: key update windows, packet by packet through a real
+    // client endpoint's receive path: previous-phase packets across a packet
+    // number gap are opened for three PTOs and discarded after (RFC 9001
+    // §6.5); a burst of them behind the update; repeated send-side updates
+    // each waiting for an acknowledgement of the new keys (§6.1).
+    inline for (.{
+        .{ "key_update_ooo_pn_gap", "tests/test_key_update_ooo_pn_gap.zig", "test-key-update-ooo-pn-gap", "Test that previous-phase packets across a packet number gap are opened for three PTOs after a key update, then discarded" },
+        .{ "key_update_stress", "tests/test_key_update_stress.zig", "test-key-update-stress", "Test bursts of reordered packets across a key update and repeated send-side key updates" },
+    }) |ku| {
+        const t = addTst(b, testlog_mod, compat_mod, ku[1], target, optimize);
+        t.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        t.root_module.addImport("quic_packet", quic_packet_mod);
+        t.root_module.addImport("quic_frame", quic_frame_mod);
+        t.root_module.addImport("quic_tls", quic_tls_mod);
+        t.root_module.addImport("quic_key_update", conn_key_update_mod);
+        const run_t = b.addRunArtifact(t);
+        const step = b.step(ku[2], ku[3]);
+        step.dependOn(&run_t.step);
+        if (filter == null or std.mem.eql(u8, filter.?, ku[0])) {
+            test_step.dependOn(&run_t.step);
+        }
+        if (filter != null and std.mem.eql(u8, filter.?, ku[0])) return;
+    }
+
     // SONNY-6454: loss detection and persistent congestion per RFC 9002.
     const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
     test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);

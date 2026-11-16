@@ -108,6 +108,9 @@ test "RFC 9001 §5.4 maybeTriggerKeyUpdateOnSend toggles tx_key_phase past byte 
     c.tx_sent_packets_since_key = 0;
     c.tx_sent_bytes_since_key = 0;
     c.disable_auto_key_update = false;
+    // RFC 9001 §6.1: no key update before the handshake is confirmed, which a
+    // client does when HANDSHAKE_DONE arrives (SONNY-6649, NEWGAP-16).
+    c.handshake_done_seen = true;
 
     // Below threshold: phase must remain stable, no update in progress.
     c.maybeTriggerKeyUpdateOnSend(1024);
