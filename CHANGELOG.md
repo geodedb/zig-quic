@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.52] - 2026-11-15
+
+### Changed
+
+- thread-pool v0.2.11 and tls v0.1.28 (SONNY-6630, the thread-pool diamond cascade). tls v0.1.28 pins the same thread-pool. Only the lazy otel v0.1.28 dependency still pins tls v0.1.24 and thread-pool v0.2.9; it is re-pinned in a later release.
+
+### Fixed
+
+- A long transfer no longer dies after a burst loss right after a key update (SONNY-6522, NEWGAP-12). Two defects let one endpoint's send keys get two generations ahead of the peer's receive keys, after which the peer could decrypt nothing it sent: the receiver kept polling, the sender kept probing, and no packet was ever acknowledged again. The stalls of the 16/64 MiB loopback transfers under CPU starvation ("key-phase desync" with the key phase bits different, and "PTO probes that never reach the connection" with them equal) were both this.
+  - A key update counted as acknowledged when the packet that triggered it, still protected with the old keys, was acknowledged: `onShortHeaderPacketSent` ran the update check before advancing the packet number, so the update's first packet number was the old-key packet's. The next update then needed no acknowledgement at all and came 512 packets later, even if every one of them was lost. RFC 9001 §6.1 forbids a subsequent update until a packet sent with the current keys is acknowledged; the update now starts at the next packet number. The duplicate copy of `maybeTriggerKeyUpdateOnSend` in `methods_c.zig` was removed.
+  - Responding to the peer's key update compared key phase bits, so when our own update was already ahead of what we received the response moved the send keys once more, to a generation the peer had never seen. The connection now counts send and receive key generations (`tx_key_gen`, `rx_key_gen`) and moves the send keys only when they are behind the receive keys (RFC 9001 §6.2).
+- A server endpoint's port can no longer be taken over by a second socket (SONNY-6522, NEWGAP-12). The UDP socket was bound with SO_REUSEADDR, which on Linux lets another socket that sets it bind the same address and port while the first is open; unicast datagrams then go to the newer socket only. A second endpoint on a live server's port (a concurrent run of the same tests, a restarted process overlapping the old one) took over its clients: they completed the handshake and every packet was acknowledged, but the first server's `tryAccept` never returned the connection. This was the "accepted connection never reaches `tryAccept`" stall. SO_REUSEADDR is no longer set (UDP has no TIME_WAIT, so a closed port rebinds without it); binding a port in use now fails with `error.BindFailed`.
+- The client takes an RTT sample from the handshake (SONNY-6522, NEWGAP-11). The server acknowledged the client's Initial after sending its ServerHello flight, which gave the client Handshake keys and made it drop its Initial keys, so the acknowledgement was discarded unread and the client confirmed the handshake without an RTT sample. Its first application PTO then used the 333 ms initial RTT, about 1 s (RFC 9002 §6.2.2): on loopback a request lost right after the handshake was resent after ~1 s. The server now acknowledges the client's Initial before sending its flight (RFC 9002 §5.1, RFC 9000 §13.2.1); the lost request is resent in ~0.1 s.
+
+### Security
+
+- Another local user could take over a QUIC server's traffic by binding its UDP port (SONNY-6522). With SO_REUSEADDR on the server socket, Linux let any process that also set it bind the same address and port, with no user check, and delivered the server's unicast datagrams to that process instead. Binds are now exclusive (see Fixed).
+
+### Tests
+
+- `zig build test-long-transfer-liveness` (SONNY-6522): real endpoints over a loopback UDP relay that removes header protection to see each packet's key phase and drops chosen datagrams. It drops the first 2000 packets of the first updated key generation, uploading and downloading 4 MiB, and checks that no second update is sent before the first is acknowledged; checks the client's handshake RTT sample; and checks that a second endpoint cannot bind a live server's port.
+
 ## [0.1.51] - 2026-11-13
 
 ### Fixed

@@ -702,6 +702,13 @@ pub const Connection = struct {
     tx_prev_keys: ?packet.AeadKeys = null,
     tx_update_in_progress: bool = false,
     tx_update_start_pn: u64 = 0,
+    // Key generations (RFC 9001 §6): how many times the send keys and the
+    // receive keys have been updated since the 1-RTT keys were installed.
+    // The key phase bit is the low bit of each; the counts keep a response
+    // to a peer's update (syncTxKeysAfterRxUpdate) from updating the send
+    // keys when they are already ahead.
+    tx_key_gen: u64 = 0,
+    rx_key_gen: u64 = 0,
     tx_sent_packets_since_key: u64 = 0,
     // Disable automatic key update (replaces QUIC_DISABLE_AUTO_KEY_UPDATE env var)
     disable_auto_key_update: bool = false,
@@ -1426,6 +1433,8 @@ pub const Connection = struct {
         self.tx_prev_keys = null;
         self.tx_update_in_progress = false;
         self.tx_update_start_pn = 0;
+        self.tx_key_gen = 0;
+        self.rx_key_gen = 0;
         self.tx_sent_packets_since_key = 0;
         self.last_stream_data_blocked_limit = 0;
         self.last_data_blocked_limit = 0;

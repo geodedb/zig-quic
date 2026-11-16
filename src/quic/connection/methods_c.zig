@@ -8,13 +8,9 @@ const tparams = @import("quic_transport_params");
 const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const reset_token_mod = @import("reset_token.zig");
-const crypto_utils = @import("crypto_utils.zig");
-const key_update = @import("quic_key_update");
 
 pub fn bind(comptime Connection: type) type {
     return struct {
-        const hashForSecret = crypto_utils.hashForSecret;
-
         const StreamTxMap = @FieldType(Connection, "stream_txs");
         const StreamRxMap = @FieldType(Connection, "streams_rx");
         const StreamTx = @FieldType(StreamTxMap.KV, "value");
@@ -31,38 +27,6 @@ pub fn bind(comptime Connection: type) type {
                 return .{ .id = sid, .n = n };
             }
             return error.WouldBlock;
-        }
-
-        fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
-            if (self.app_tx_keys == null or self.app_tx_secret == null) return;
-            if (self.disable_auto_key_update) return;
-            if (self.tx_update_in_progress) return;
-            self.tx_sent_packets_since_key +%= 1;
-            self.tx_sent_bytes_since_key +%= @intCast(bytes_sent);
-            const pkt_thr: u64 = 512;
-            const byte_thr: u64 = 1024 * 1024;
-            if (self.tx_sent_packets_since_key >= pkt_thr or self.tx_sent_bytes_since_key >= byte_thr) {
-                const current_secret = self.app_tx_secret.?;
-                const hash = hashForSecret(&current_secret) catch return;
-                // Local shim: upstream tls removed updateQuicSecretHash in
-                // tls@7510c5c0 (GAP-0122) per the removal note in its
-                // key_schedule.zig:316. RFC 9001 §6 specifies label "quic ku";
-                // derive directly via expandLabelHash.
-                const next_secret = key_update.deriveNextTrafficSecret(hash, &current_secret) catch return;
-                const preserved_hp = self.app_tx_keys.?.hp;
-
-                const t = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
-                if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
-                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
-                self.app_tx_secret = next_secret;
-                self.maybeEmitTxKeyUpdateLog(&next_secret);
-                self.tx_key_phase = !self.tx_key_phase;
-                self.tx_update_in_progress = true;
-                self.tx_update_start_pn = self.pn_app_tx;
-                self.tx_sent_packets_since_key = 0;
-                self.tx_sent_bytes_since_key = 0;
-                logger.debugPrint("keyupdate: triggered phase={d} start_pn={d}\n", .{ @intFromBool(self.tx_key_phase), self.tx_update_start_pn });
-            }
         }
 
         /// Record a short-header 1-RTT packet as sent and maybe trigger key update.
@@ -82,9 +46,11 @@ pub fn bind(comptime Connection: type) type {
                 logger.debugPrint("[PHASE51] ERROR in rec.onPacketSent: {s}\n", .{@errorName(err)});
             };
 
-            // Legacy shim for back-compat
-            if (ack_eliciting) maybeTriggerKeyUpdateOnSend(self, bytes_sent);
             self.pn_app_tx +%= 1;
+            // After counting this packet: it was protected with the current
+            // keys, so an update it triggers starts at the next packet
+            // number (RFC 9001 §6.1, SONNY-6522).
+            if (ack_eliciting) self.maybeTriggerKeyUpdateOnSend(bytes_sent);
             self.markPtoDirty();
             // AEAD usage counting: increment total encrypted count for confidentiality limit
             self.aead_tx_encrypted_count +%= 1;

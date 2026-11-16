@@ -1887,6 +1887,8 @@ pub fn bind(comptime Connection: type) type {
             // Reset per-direction phases to initial 0
             self.rx_key_phase = false;
             self.tx_key_phase = false;
+            self.tx_key_gen = 0;
+            self.rx_key_gen = 0;
             self.tx_sent_packets_since_key = 0;
             self.tx_sent_bytes_since_key = 0;
             self.tx_update_in_progress = false;
@@ -2026,8 +2028,13 @@ pub fn bind(comptime Connection: type) type {
                 self.app_tx_secret = next_secret;
                 self.maybeEmitTxKeyUpdateLog(&next_secret);
                 self.tx_key_phase = !self.tx_key_phase;
+                self.tx_key_gen += 1;
                 self.tx_update_in_progress = true;
-                // First PN in the new phase is the next sent PN value
+                // First PN in the new phase is the next sent PN value. The
+                // caller must have counted the packet that triggered the
+                // update already (onShortHeaderPacketSent increments
+                // pn_app_tx first): that packet went out with the old keys,
+                // and an ACK for it must not complete this update.
                 self.tx_update_start_pn = self.pn_app_tx;
                 // Reset counters for next epoch
                 self.tx_sent_packets_since_key = 0;
@@ -2049,13 +2056,25 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
-        /// Remote key update observed: align our TX keys to the same phase immediately.
+        /// Remote key update observed: update our send keys to the peer's
+        /// generation before acknowledging (RFC 9001 §6.2).
+        ///
+        /// Compare generations, not key phase bits: when our own update is
+        /// already ahead of what we receive (we initiated it, the peer has
+        /// not responded yet), the phases differ although the send keys
+        /// must not move. Moving them anyway skipped a generation the peer
+        /// never saw, and it could decrypt nothing more (SONNY-6522).
         pub fn syncTxKeysAfterRxUpdate(self: *Connection) void {
             if (self.app_tx_secret == null or self.app_tx_keys == null) return;
-            if (self.tx_key_phase == self.rx_key_phase) return;
+            while (self.tx_key_gen < self.rx_key_gen) {
+                if (!advanceTxKeysOnce(self)) return;
+            }
+        }
+
+        fn advanceTxKeysOnce(self: *Connection) bool {
             const current_secret = self.app_tx_secret.?;
-            const hash = hashForSecret(&current_secret) catch return;
-            const next_secret = key_update.deriveNextTrafficSecret(hash, &current_secret) catch return;
+            const hash = hashForSecret(&current_secret) catch return false;
+            const next_secret = key_update.deriveNextTrafficSecret(hash, &current_secret) catch return false;
             const next_mat = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
             if (self.tx_prev_keys) |*kp| {
                 zeroKeys(kp);
@@ -2067,7 +2086,8 @@ pub fn bind(comptime Connection: type) type {
             self.app_tx_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = preserved_hp };
             self.app_tx_secret = next_secret;
             self.maybeEmitTxKeyUpdateLog(&next_secret);
-            self.tx_key_phase = self.rx_key_phase;
+            self.tx_key_phase = !self.tx_key_phase;
+            self.tx_key_gen += 1;
             self.tx_update_in_progress = true;
             self.tx_update_start_pn = self.pn_app_tx;
             self.tx_sent_packets_since_key = 0;
@@ -2076,6 +2096,7 @@ pub fn bind(comptime Connection: type) type {
                 @intFromBool(self.tx_key_phase),
                 self.tx_update_start_pn,
             });
+            return true;
         }
     };
 }

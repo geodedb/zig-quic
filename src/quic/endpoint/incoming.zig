@@ -924,6 +924,14 @@ pub fn processInitialResolved(
         saw_crypto,
     });
     if (conn.role == .Server and saw_crypto) {
+        // Acknowledge the client's Initial before sending the ServerHello
+        // flight. The client drops its Initial keys once that flight gives
+        // it Handshake keys, so an ACK sent after the flight arrived too late
+        // to be read, and the client confirmed the handshake without an RTT
+        // sample: its first application PTO then used the 333 ms initial RTT,
+        // about 1 s (RFC 9002 §5.1, §6.2.2; RFC 9000 §13.2.1 asks for the
+        // acknowledgement to be sent promptly). SONNY-6522, NEWGAP-11.
+        sendInitialAck(ctx, peer, conn, version);
         logger.debugPrint("[processInitial] Attempting to send ServerHello...\n", .{});
         // ServerHello must be sent in Initial packet (RFC 9001 §4.1.1)
         var hs_ctx = handshake_integration.HandshakeContext{
@@ -965,103 +973,105 @@ pub fn processInitialResolved(
         };
     }
 
-    // Send ACK for received Initial packet
-    if (saw_crypto) {
-        if (conn.initial_tx_keys) |tx_keys| {
-            // Build ACK frame
-            var frames_buf: [4096]u8 = undefined;
-            var frames_stream = @import("compat").fixedBufWriter(&frames_buf);
-            const w = frames_stream.writer();
+    // The server acknowledges before sending its own flight, see above.
+    if (saw_crypto and conn.role != .Server) sendInitialAck(ctx, peer, conn, version);
+}
 
-            const ack_desc = conn.buildAckInitial();
-            logger.debugPrint("[processInitial] Building ACK: largest={}, first_range={}, ranges_len={}\n", .{
-                ack_desc.largest,
-                ack_desc.first_range,
-                ack_desc.ranges.len,
-            });
-            logger.debugPrint("[processInitial] pn_initial: max={}, have_any={}\n", .{
-                conn.pn_initial.max,
-                conn.pn_initial.have_any,
-            });
-            const ack_frame = frame.Frame{ .ack = .{
-                .largest = ack_desc.largest,
-                .ack_delay = 0,
-                .first_range = ack_desc.first_range,
-                .ranges = ack_desc.ranges,
-            } };
-            _ = ack_frame.write(w) catch 0;
-            const frames_data = frames_stream.getWritten();
+/// Acknowledge the peer's Initial packets in a standalone Initial packet.
+fn sendInitialAck(ctx: *RxContext, peer: conn_mod.SockAddr, conn: anytype, version: u32) void {
+    if (conn.initial_tx_keys) |tx_keys| {
+        // Build ACK frame
+        var frames_buf: [4096]u8 = undefined;
+        var frames_stream = @import("compat").fixedBufWriter(&frames_buf);
+        const w = frames_stream.writer();
 
-            // Debug: Print ACK frame bytes
-            logger.debugPrint("[processInitial] ACK frame bytes ({} bytes): ", .{frames_data.len});
-            for (frames_data) |b| {
-                logger.debugPrint("{X:0>2} ", .{b});
-            }
-            logger.debugPrint("\n", .{});
+        const ack_desc = conn.buildAckInitial();
+        logger.debugPrint("[processInitial] Building ACK: largest={}, first_range={}, ranges_len={}\n", .{
+            ack_desc.largest,
+            ack_desc.first_range,
+            ack_desc.ranges.len,
+        });
+        logger.debugPrint("[processInitial] pn_initial: max={}, have_any={}\n", .{
+            conn.pn_initial.max,
+            conn.pn_initial.have_any,
+        });
+        const ack_frame = frame.Frame{ .ack = .{
+            .largest = ack_desc.largest,
+            .ack_delay = 0,
+            .first_range = ack_desc.first_range,
+            .ranges = ack_desc.ranges,
+        } };
+        _ = ack_frame.write(w) catch 0;
+        const frames_data = frames_stream.getWritten();
 
-            // Use peer's SCID as DCID
-            const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+        // Debug: Print ACK frame bytes
+        logger.debugPrint("[processInitial] ACK frame bytes ({} bytes): ", .{frames_data.len});
+        for (frames_data) |b| {
+            logger.debugPrint("{X:0>2} ", .{b});
+        }
+        logger.debugPrint("\n", .{});
 
-            // RFC 9000 §14.1: client Initial datagrams MUST be at least 1200 bytes.
-            // RFC 9000 §8.1.2: client must echo Retry token on subsequent Initial packets.
-            const token = if (conn.role == .Client) conn.initial_token.items else &[_]u8{};
-            var ack_payload: std.ArrayList(u8) = .empty;
-            defer ack_payload.deinit(ctx.allocator.*);
-            ack_payload.appendSlice(ctx.allocator.*, frames_data) catch |err| {
-                logger.debugPrint("[INCOMING] ACK payload append failed: {s}\n", .{@errorName(err)});
-                return;
-            };
+        // Use peer's SCID as DCID
+        const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
-            var pkt = packet.encodeInitialProtected(
-                ctx.allocator.*,
-                version,
-                initial_dcid,
-                conn.our_scid.bytes[0..conn.our_scid.len],
-                token,
-                @as(u32, @truncate(conn.pn_initial_tx)),
-                2,
-                ack_payload.items,
-                tx_keys,
-            ) catch null;
+        // RFC 9000 §14.1: client Initial datagrams MUST be at least 1200 bytes.
+        // RFC 9000 §8.1.2: client must echo Retry token on subsequent Initial packets.
+        const token = if (conn.role == .Client) conn.initial_token.items else &[_]u8{};
+        var ack_payload: std.ArrayList(u8) = .empty;
+        defer ack_payload.deinit(ctx.allocator.*);
+        ack_payload.appendSlice(ctx.allocator.*, frames_data) catch |err| {
+            logger.debugPrint("[INCOMING] ACK payload append failed: {s}\n", .{@errorName(err)});
+            return;
+        };
 
-            if (pkt) |bytes_out_initial| {
-                var bytes_out = bytes_out_initial;
-                if (conn.role == .Client and bytes_out.len < 1200) {
-                    const pad_needed = 1200 - bytes_out.len;
-                    ctx.allocator.free(bytes_out);
-                    ack_payload.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
-                        logger.debugPrint("[INCOMING] PADDING append failed: {s}\n", .{@errorName(err)});
-                        return;
-                    };
-                    pkt = packet.encodeInitialProtected(
-                        ctx.allocator.*,
-                        version,
-                        initial_dcid,
-                        conn.our_scid.bytes[0..conn.our_scid.len],
-                        token,
-                        @as(u32, @truncate(conn.pn_initial_tx)),
-                        2,
-                        ack_payload.items,
-                        tx_keys,
-                    ) catch null;
-                    if (pkt) |retry_out| {
-                        bytes_out = retry_out;
-                    } else {
-                        return;
-                    }
-                }
-                defer ctx.allocator.free(bytes_out);
-                // Fire-and-forget: UDP send may fail transiently; loss recovery retransmits.
-                _ = ctx.send_fn(peer, bytes_out) catch |err| {
-                    logger.debugPrint("[INCOMING] ACK send failed: {s}\n", .{@errorName(err)});
+        var pkt = packet.encodeInitialProtected(
+            ctx.allocator.*,
+            version,
+            initial_dcid,
+            conn.our_scid.bytes[0..conn.our_scid.len],
+            token,
+            @as(u32, @truncate(conn.pn_initial_tx)),
+            2,
+            ack_payload.items,
+            tx_keys,
+        ) catch null;
+
+        if (pkt) |bytes_out_initial| {
+            var bytes_out = bytes_out_initial;
+            if (conn.role == .Client and bytes_out.len < 1200) {
+                const pad_needed = 1200 - bytes_out.len;
+                ctx.allocator.free(bytes_out);
+                ack_payload.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
+                    logger.debugPrint("[INCOMING] PADDING append failed: {s}\n", .{@errorName(err)});
+                    return;
                 };
-                conn.onPacketSent(.Initial, conn.pn_initial_tx, bytes_out.len, false);
-                conn.pn_initial_tx +%= 1;
+                pkt = packet.encodeInitialProtected(
+                    ctx.allocator.*,
+                    version,
+                    initial_dcid,
+                    conn.our_scid.bytes[0..conn.our_scid.len],
+                    token,
+                    @as(u32, @truncate(conn.pn_initial_tx)),
+                    2,
+                    ack_payload.items,
+                    tx_keys,
+                ) catch null;
+                if (pkt) |retry_out| {
+                    bytes_out = retry_out;
+                } else {
+                    return;
+                }
             }
+            defer ctx.allocator.free(bytes_out);
+            // Fire-and-forget: UDP send may fail transiently; loss recovery retransmits.
+            _ = ctx.send_fn(peer, bytes_out) catch |err| {
+                logger.debugPrint("[INCOMING] ACK send failed: {s}\n", .{@errorName(err)});
+            };
+            conn.onPacketSent(.Initial, conn.pn_initial_tx, bytes_out.len, false);
+            conn.pn_initial_tx +%= 1;
         }
     }
 }
-
 // =============================================================================
 // Phase 4b.5 Session 8: RX Handshake Packet Processing
 // =============================================================================

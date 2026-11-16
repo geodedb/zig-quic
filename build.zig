@@ -1046,6 +1046,25 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "large_stream_flow_control")) return;
 
+    // SONNY-6522: long transfers must not stall for good under heavy loss
+    // (key-update desync, the handshake RTT sample, a server port taken over
+    // by a second socket). Real endpoints over a loopback UDP relay that
+    // drops chosen datagrams.
+    const test_long_transfer_liveness = addTst(b, testlog_mod, compat_mod, "tests/test_long_transfer_liveness.zig", target, optimize);
+    test_long_transfer_liveness.root_module.addImport("quic_api", quic_api_mod);
+    test_long_transfer_liveness.root_module.addImport("quic_config", quic_config_mod);
+    test_long_transfer_liveness.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_long_transfer_liveness.root_module.addImport("test_certs", test_certs_mod);
+    test_long_transfer_liveness.root_module.addImport("quic_build_options", build_options_mod);
+    test_long_transfer_liveness.root_module.addImport("quic_conn", quic_conn_mod);
+    const run_test_long_transfer_liveness = b.addRunArtifact(test_long_transfer_liveness);
+    const long_transfer_liveness_step = b.step("test-long-transfer-liveness", "Test that long transfers survive loss across a key update, the handshake RTT sample, and exclusive server ports");
+    long_transfer_liveness_step.dependOn(&run_test_long_transfer_liveness.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "long_transfer_liveness")) {
+        test_step.dependOn(&run_test_long_transfer_liveness.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "long_transfer_liveness")) return;
+
     // SONNY-6454: loss detection and persistent congestion per RFC 9002.
     const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
     test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);
