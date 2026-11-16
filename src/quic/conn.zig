@@ -611,7 +611,12 @@ test "connection endpoint rx lifetime guard rejects refs after destroy begins" {
 pub const Connection = struct {
     // GAP-0200: Per-connection mutex for thread-safe access to connection state
     // This protects all mutable state in this connection: streams, keys, flow control, etc.
-    // Lock ordering: endpoint.mu -> connection.mu (never reverse)
+    // Lock ordering: endpoint.mu -> connection.mu (never reverse);
+    // endpoint_rx_serial_mu -> tls_context_mu -> connection.mu: the step that
+    // completes the handshake sends 1-RTT packets under connection.mu while
+    // TLS holds tls_context_mu (SONNY-6654), so nothing that holds
+    // connection.mu may wait for tls_context_mu or endpoint_rx_serial_mu
+    // (the Initial/Handshake PTO timer only tries the latter).
     mu: std.Io.Mutex = std.Io.Mutex.init,
     // CANARY: REQ=REQ-QUIC-HC-134; FEATURE="High-Concurrency Requests"; ASPECT=SentPacketLegacyMapLock; STATUS=TESTED; TEST=onPacketSent legacy sent maps tolerate concurrent PTO accounting; OWNER=transport; UPDATED=2026-05-28
     // Protects legacy sent_time/sent_sizes maps updated by onPacketSent from

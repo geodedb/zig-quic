@@ -1874,7 +1874,17 @@ pub fn bind(comptime Connection: type) type {
         }
 
         /// Derive application keys and traffic secrets for QUIC from current TLS secrets.
+        ///
+        /// Takes Connection.mu: it replaces the 1-RTT keys that locked senders
+        /// read, and sends 1-RTT packets (flow-control credit, the server's
+        /// HANDSHAKE_DONE) from the step that completes the handshake, while
+        /// the application may already be writing; every 1-RTT packet number,
+        /// and so AEAD nonce, is allocated under the mutex (RFC 9000 §12.3,
+        /// RFC 9001 §5.3; SONNY-6654). Callers hold tls_context_mu or no lock.
         pub fn deriveAppKeys(self: *Connection, client_app: ks.Secret, server_app: ks.Secret, version_v2: bool) void {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             // Assign rx/tx according to role
             const rx_secret = if (self.role == .Server) client_app else server_app;
             const tx_secret = if (self.role == .Server) server_app else client_app;

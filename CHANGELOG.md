@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- No two packets share a packet number, and so an AEAD nonce, while the handshake completes (RFC 9000 §12.3, RFC 9001 §5.3; SONNY-6654, NEWGAP-23). v0.1.53 put every steady-state 1-RTT sender under `Connection.mu` (SONNY-4379), but the step that completes the handshake still sent without it: the server's HANDSHAKE_DONE packet (`sendHandshakeDoneControl`, from `pushCrypto`) and `deriveAppKeys`, which replaces the 1-RTT keys and sends flow-control credit and HANDSHAKE_DONE. A server application writing the moment its keys are usable (a connection is accepted on its first Initial) sent concurrently with that packet: over 40 handshakes, 67 server packet numbers were used twice, in every connection. Both now take `Connection.mu` (lock order `endpoint_rx_serial_mu` -> `tls_context_mu` -> `Connection.mu`), as do the CONNECTION_CLOSE for a malformed Initial frame (a 1-RTT packet once the keys exist), the unused `handshake_integration.sendHandshakeDone`, and the qns interop client's keep-alive probe. Initial and Handshake packets are numbered on the receive path under `endpoint_rx_serial_mu`, and the Initial/Handshake PTO probes now take it too (without waiting: when the receive path has the connection the probe is re-armed), so a probe can no longer take the packet number of a packet the receive path is sending.
+
+### Tests
+
+- `zig build test-sonny6654-handshake-pn` (SONNY-6654): 40 handshakes through the loopback relay while the server application writes from the moment it accepts the connection; the relay records every 1-RTT datagram (`ShortLog`) and the test reads the server's packet numbers afterwards. Before: 67 duplicates. After: none.
+
 ## [0.1.53] - 2026-11-16
 
 ### Fixed
