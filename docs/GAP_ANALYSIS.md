@@ -141,7 +141,7 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 | ID | Sev | Category | Title | Location | RFC | Status |
 |---|---|---|---|---|---|---|
 | NEWGAP-01 | High | conformance | Received CID transport parameters not authenticated against on-wire CIDs | `src/quic/connection/methods_c.zig` `applyPeerTransportParameters` | RFC 9000 §7.3 | **Fixed** (commit `0e7ede3`) |
-| NEWGAP-02 | High | conformance | RETIRE_CONNECTION_ID never sent outbound; `retire_prior_to` retires locally but peer never notified | `src/quic/conn.zig` `onNewConnectionId` | RFC 9000 §5.1.2 | **Open** |
+| NEWGAP-02 | High | conformance | RETIRE_CONNECTION_ID never sent outbound; `retire_prior_to` retires locally but peer never notified | `src/quic/conn.zig` `onNewConnectionId` | RFC 9000 §5.1.2 | **Fixed** (v0.1.54, SONNY-6655) |
 | NEWGAP-03 | High | conformance | No CONNECTION_ID_LIMIT_ERROR enforcement when peer exceeds `active_connection_id_limit` | `src/quic/conn.zig` `onNewConnectionId` | RFC 9000 §5.1.1 | **Fixed** (commit `0e7ede3`) |
 | NEWGAP-04 | Medium | conformance | Unknown/malformed frames in Initial space silently dropped instead of FRAME_ENCODING_ERROR | `src/quic/endpoint/incoming.zig` | RFC 9000 §12.4 | **Fixed** (commit `2047925`) |
 | NEWGAP-05 | Medium | missing-feature | Server `preferred_address` parsed to raw bytes only; never structurally parsed or migrated to | `src/quic/transport_params.zig` | RFC 9000 §9.6 | **Open** |
@@ -159,11 +159,11 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 | NEWGAP-17 | Medium | conformance | HANDSHAKE_DONE was sent once and never retransmitted | `src/quic/connection/methods_a.zig`, `src/quic/connection/ctrl_retx.zig` | RFC 9000 §13.3 | **Fixed** (v0.1.53, SONNY-6649) |
 | NEWGAP-18 | Medium | conformance | Previous receive keys kept for 16 packets opened with them, not three PTOs; a packet the current keys opened with the other phase bit promoted the keys | `src/quic/endpoint/incoming/module_b.zig` | RFC 9001 §6.3, §6.5 | **Fixed** (v0.1.53, SONNY-6649) |
 | NEWGAP-19 | Medium | liveness | The out-of-order segment cap counted STREAM frames: small frames behind one lost packet were a FLOW_CONTROL_ERROR | `src/quic/connection/methods_a.zig`, `src/quic/connection/stream.zig` | RFC 9000 §4.1 | **Fixed** (v0.1.53, SONNY-6649) |
-| NEWGAP-20 | Medium | interop | The Zig client does not complete a handshake with a quic-go server, and a Zig server <-> quic-go client transfer fails | `cmd/qns-endpoint.zig`, client handshake path | RFC 9000, RFC 9001 | **Open** |
-| NEWGAP-21 | Low | conformance | NEW_CONNECTION_ID frames are not retransmitted when lost (not tracked by the control-frame retransmission) | `src/quic/connection/methods_a.zig`, `src/quic/connection/ctrl_retx.zig` | RFC 9000 §13.3 | **Open** |
+| NEWGAP-20 | Medium | interop | The Zig client does not complete a handshake with a quic-go server, and a Zig server <-> quic-go client transfer fails | `.gitlab-ci.yml` (`interop-test`): one network simulator reused across cases | RFC 9000, RFC 9001 | **Fixed** (v0.1.54, SONNY-6656; CI harness, not the client) |
+| NEWGAP-21 | Low | conformance | NEW_CONNECTION_ID frames are not retransmitted when lost (not tracked by the control-frame retransmission) | `src/quic/connection/methods_a.zig`, `src/quic/connection/ctrl_retx.zig` | RFC 9000 §13.3 | **Fixed** (v0.1.54, SONNY-6655) |
 | NEWGAP-22 | Low | concurrency | The PMTUD timer sends 1-RTT packets without the connection mutex (latent: PMTUD is only started by tests) | `src/quic/endpoint.zig` | — | **Fixed** (v0.1.53, SONNY-4379) |
-| NEWGAP-23 | Low | concurrency | 1-RTT packets sent in the step that completes the handshake (HANDSHAKE_DONE from `pushCrypto`/`deriveAppKeys`, an Initial-path CONNECTION_CLOSE) are still sent without the connection mutex | `src/quic/connection/methods_a.zig`, `src/quic/connection/methods_b.zig`, `src/quic/endpoint/incoming.zig` | RFC 9000 §12.3 | **Open** |
-| NEWGAP-24 | Low | benchmark integrity | `flush_cadence` and `datagram_batch` still return placeholder rows for runtime failures other than credentials (e.g. a starved server) | `benchmarks/integration/flush_cadence.zig`, `benchmarks/integration/datagram_batch.zig` | — | **Open** |
+| NEWGAP-23 | Low | concurrency | 1-RTT packets sent in the step that completes the handshake (HANDSHAKE_DONE from `pushCrypto`/`deriveAppKeys`, an Initial-path CONNECTION_CLOSE) are still sent without the connection mutex | `src/quic/connection/methods_a.zig`, `src/quic/connection/methods_b.zig`, `src/quic/endpoint/incoming.zig` | RFC 9000 §12.3 | **Fixed** (v0.1.54, SONNY-6654) |
+| NEWGAP-24 | Low | benchmark integrity | `flush_cadence` and `datagram_batch` still return placeholder rows for runtime failures other than credentials (e.g. a starved server) | `benchmarks/integration/flush_cadence.zig`, `benchmarks/integration/datagram_batch.zig` | — | **Fixed** (v0.1.54, SONNY-6656) |
 
 ### NEWGAP-01: Received CID transport parameters not authenticated against on-wire CIDs
 
@@ -180,7 +180,7 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 - **Category:** conformance
 - **RFC:** RFC 9000 §5.1.2
 - **Location:** `src/quic/conn.zig` `onNewConnectionId`
-- **Status:** **Open**. `retire_prior_to` retires connection IDs locally but the peer is never notified. Needs a pending-retire queue plus send-path integration (the encoder `writeRetireConnectionId` exists; there is no outbound caller).
+- **Status:** **Fixed** (v0.1.54, SONNY-6655). `retire_prior_to` retired the peer's connection IDs locally, the peer was never told, and short headers kept going to its initial connection ID. Retired sequence numbers, the initial one included, are queued (`pending_retire_cids`, 16, twice our active_connection_id_limit; more is CONNECTION_ID_LIMIT_ERROR) and sent in RETIRE_CONNECTION_ID frames under `Connection.mu` (`flushPendingRetireConnectionIds`), which are retransmitted when lost; `shortHeaderDcid` (now used by every 1-RTT sender, the ACK paths included) moves to the peer's newest connection ID once the initial one is retired; a NEW_CONNECTION_ID below a Retire Prior To already received is retired at once; a Retire Prior To above the sequence number is FRAME_ENCODING_ERROR (§19.15). `zig build test-sonny6655-cid-retransmission`.
 
 ### NEWGAP-03: No CONNECTION_ID_LIMIT_ERROR enforcement when peer exceeds active_connection_id_limit
 
@@ -326,8 +326,8 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 
 - **Severity:** Medium
 - **Category:** interop
-- **Location:** client handshake path, `cmd/qns-endpoint.zig`
-- **Status:** **Open** (found with SONNY-6649). The interop-test job reported success whatever happened; it now generates the certificates and checks the outcome. Of its four cases, only Zig server <-> quic-go client (handshake) passes. The Zig client times out against a quic-go server, which answers its Initial with a coalesced Initial + Handshake + 1-RTT datagram (the client sends 7 Initials and never completes), and Zig server <-> quic-go client transfer fails with client exit 1. Same result on v0.1.52.
+- **Location:** `.gitlab-ci.yml` (`interop-test`), not the client handshake path
+- **Status:** **Fixed** (v0.1.54, SONNY-6656). The interop-test job reported success whatever happened; v0.1.53 made it check the outcome, and of its four cases only the first (Zig server <-> quic-go client, handshake) passed. The Zig client and server were not at fault: the job started the network simulator once and ran every case against it, while the quic-interop-runner starts it for each test. A simulator reused with new endpoint containers on the same addresses forwarded nothing, so every case after the first failed with a client that never heard from its server (the Zig client sent 7 Initials; quic-go reported "no recent network activity"). Run locally with the CI images: v0.1.53's endpoint passes all four cases with a fresh simulator per case and reproduces the CI result (1 pass, 3 fail) with one simulator; quic-go against quic-go also fails its second case on a reused simulator. The job now starts a fresh simulator for every case and is no longer `allow_failure`. With it, all four cases pass on v0.1.53 and on this release.
 
 ### NEWGAP-21: NEW_CONNECTION_ID not retransmitted
 
@@ -335,7 +335,7 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 - **Category:** conformance
 - **RFC:** RFC 9000 §13.3
 - **Location:** `src/quic/connection/methods_a.zig` (`sendHandshakeDoneControl`), `src/quic/connection/ctrl_retx.zig`
-- **Status:** **Open** (found with SONNY-6649). NEW_CONNECTION_ID frames, including those in the packet that carries HANDSHAKE_DONE, are not tracked by the control-frame retransmission, so a lost one is not sent again.
+- **Status:** **Fixed** (v0.1.54, SONNY-6655). NEW_CONNECTION_ID frames, including those in the packet that carries HANDSHAKE_DONE, were not tracked by the control-frame retransmission: with that packet lost, a client held 3 of the server's 7 connection IDs for good. `ctrl_retx` now records NEW_CONNECTION_ID and RETIRE_CONNECTION_ID per packet; a lost NEW_CONNECTION_ID is sent again while the connection ID is not retired. The HANDSHAKE_DONE packet is recorded (`sendHandshakeDoneControl`), and an ACK packet carrying NEW_CONNECTION_ID is recorded and ack-eliciting. `zig build test-sonny6655-cid-retransmission`.
 
 ### NEWGAP-22: PMTUD timer sends without the connection mutex
 
@@ -350,14 +350,14 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 - **Category:** concurrency
 - **RFC:** RFC 9000 §12.3, RFC 9001 §5.3
 - **Location:** `sendHandshakeDoneControl` and `deriveAppKeys` (via `pushCrypto`), the CONNECTION_CLOSE in `processInitialResolved`
-- **Status:** **Open** (found with SONNY-4379). SONNY-4379 put every steady-state 1-RTT sender under `Connection.mu`. These remain: they run in the receive step that completes the handshake, before the application can usually send on the connection, and deep in the TLS call chain, where taking the mutex needs its own lock-order audit.
+- **Status:** **Fixed** (v0.1.54, SONNY-6654). A server accepts a connection on its first Initial, so an application writing the moment the 1-RTT keys are usable raced the HANDSHAKE_DONE packet: over 40 handshakes, 67 server packet numbers were used twice, in every connection. `sendHandshakeDoneControl` and `deriveAppKeys` take `Connection.mu` (the lock order is `endpoint_rx_serial_mu` -> `tls_context_mu` -> `Connection.mu`; nothing holding `Connection.mu` waits for the other two), as do the Initial-path CONNECTION_CLOSE, the unused `handshake_integration.sendHandshakeDone` and the qns client keep-alive probe. Audit of the remaining allocations: every other 1-RTT sender holds `Connection.mu`; Initial and Handshake packets are numbered under `endpoint_rx_serial_mu`, which the Initial/Handshake PTO probes now try too (re-armed when the receive path holds it). `zig build test-sonny6654-handshake-pn`: 67 duplicates before, none after.
 
 ### NEWGAP-24: benchmark placeholders for runtime failures
 
 - **Severity:** Low
 - **Category:** benchmark integrity
 - **Location:** `benchmarks/integration/flush_cadence.zig`, `benchmarks/integration/datagram_batch.zig` (`placeholderOutput`)
-- **Status:** **Open** (found with SONNY-4381). Missing or invalid credentials and a server that does not start now yield not-measured rows that fail the perf gate. Other failures in these two scenarios (e.g. a starved server) still return placeholder numbers; they should be not-measured too. Neither scenario is in the CI perf gate (`--suite=micro`).
+- **Status:** **Fixed** (v0.1.54, SONNY-6656). Missing or invalid credentials and a server that does not start yielded not-measured rows (SONNY-4381); the other failures of these two scenarios returned placeholder numbers. A client that does not start, a failed or timed-out connect or handshake, a run with no sample and a non-Linux host are now not measured too (`ClientStartFailed`, `ConnectFailed`, `HandshakeTimeout`, `NoSamples`, `UnsupportedPlatform`). Other scenarios still return placeholders on non-Linux hosts (`stream_throughput`, `handshake_e2e`, the external tier).
 
 ### Second-pass additions
 
