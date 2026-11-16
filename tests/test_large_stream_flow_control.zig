@@ -169,12 +169,12 @@ fn reportStall(conn: *api.Connection, sid: api.QuicStreamId, server: ?*api.Conne
         defer sc.mu.unlock(io);
         if (sc.streams_rx.getPtr(sid)) |rx| std.debug.print("  server rx: consumed={d} recv_off={d} lmsd={d} last_sent={d} state={s}\n", .{ rx.bytes_consumed_total, rx.recv_off, rx.local_max_stream_data, rx.last_sent_max_stream_data, @tagName(rx.state) });
         if (sc.stream_txs.getPtr(sid)) |tx| std.debug.print("  server tx: state={s}\n", .{@tagName(tx.state)});
-        std.debug.print("  server keys: rx_phase={} tx_phase={} tx_update_in_progress={} rx_prev_allow={d} largest_rx_pn={d}\n", .{ sc.rx_key_phase, sc.tx_key_phase, sc.tx_update_in_progress, sc.rx_prev_allow, sc.pn_app.max });
+        std.debug.print("  server keys: rx_phase={} tx_phase={} tx_update_in_progress={} rx_prev_keys={} largest_rx_pn={d}\n", .{ sc.rx_key_phase, sc.tx_key_phase, sc.tx_update_in_progress, sc.rx_prev_keys != null, sc.pn_app.max });
         std.debug.print("  server: ctrl tracked={d} stream retx tracked={d} retx sent={d} pto_active={} pto_count={d} pto_app_count={d} inflight={d} cwnd={d} largest_acked={?d} pn_tx={d} srtt_us={d} rtt_sample={}\n", .{ sc.ctrl_retx.count(), sc.app_stream_retx.count(), sc.stream_retx_packets, sc.pto_app_active, sc.rec.pto_count, sc.pto_app_count, sc.rec.cc.bytes_in_flight, sc.rec.cc.cwnd, sc.rec.spaces[2].largest_acked, sc.pn_app_tx, sc.rec.rtt.smoothed_rtt_ns / 1000, sc.rec.rtt.have_sample });
     }
     conn.mu.lockUncancelable(io);
     defer conn.mu.unlock(io);
-    std.debug.print("  client keys: rx_phase={} tx_phase={} tx_update_in_progress={} rx_prev_allow={d} largest_rx_pn={d}\n", .{ conn.rx_key_phase, conn.tx_key_phase, conn.tx_update_in_progress, conn.rx_prev_allow, conn.pn_app.max });
+    std.debug.print("  client keys: rx_phase={} tx_phase={} tx_update_in_progress={} rx_prev_keys={} largest_rx_pn={d}\n", .{ conn.rx_key_phase, conn.tx_key_phase, conn.tx_update_in_progress, conn.rx_prev_keys != null, conn.pn_app.max });
     if (conn.stream_txs.getPtr(sid)) |tx| std.debug.print("  client tx: peer limit={d} state={s}\n", .{ tx.peer_max_stream_data, @tagName(tx.state) });
     std.debug.print("  client: conn peer limit={d} retx tracked={d} retx sent={d} pto_active={} pto_count={d} pto_app_count={d} inflight={d} cwnd={d} largest_acked={?d} pn_tx={d} srtt_us={d}\n", .{ conn.peer_max_stream_data, conn.app_stream_retx.count(), conn.stream_retx_packets, conn.pto_app_active, conn.rec.pto_count, conn.pto_app_count, conn.rec.cc.bytes_in_flight, conn.rec.cc.cwnd, conn.rec.spaces[2].largest_acked, conn.pn_app_tx, conn.rec.rtt.smoothed_rtt_ns / 1000 });
     const now_i = @import("compat").nanoTimestamp();
@@ -334,7 +334,9 @@ test "SONNY-6475 reassembly work per packet does not grow with the data buffered
         rx.tryDrain(&alloc);
     }
     try testing.expectEqual(@as(u64, 0), rx.recv_off);
-    try testing.expectEqual(segments, rx.bufs.items.len);
+    // Contiguous data behind the hole is one segment (SONNY-6649).
+    try testing.expectEqual(@as(usize, 1), rx.bufs.items.len);
+    try testing.expectEqual(@as(u64, segments * seg_len), rx.buffered_bytes);
 
     // The retransmission fills the hole and everything drains.
     rx.insert(&alloc, 0, &data);

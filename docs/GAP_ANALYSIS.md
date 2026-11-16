@@ -152,6 +152,18 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 | NEWGAP-10 | Medium | conformance | Initial/Handshake PTO fires on every 100 ms timer wake-up regardless of its deadline, and each firing raises the backoff shared with application data | `src/quic/connection/methods_b.zig`, `src/quic/endpoint.zig` | RFC 9002 §6.2.1 | **Fixed** (v0.1.51) |
 | NEWGAP-11 | Medium | conformance | The client takes no RTT sample during the handshake: the server acknowledges its Initial and Handshake packets in separate ACK-only packets that the client never processes | `src/quic/endpoint/incoming.zig`, `src/quic/endpoint/incoming/module_b.zig` | RFC 9002 §5.1 | **Fixed** (v0.1.52, SONNY-6522) |
 | NEWGAP-12 | High | liveness | Under heavy loss a long transfer can stall for good: key-phase desync, PTO probes never received by the connection, accepted connection never reaching `tryAccept` | `src/quic/connection/methods_b.zig`, `src/quic/connection/methods_c.zig`, `src/quic/endpoint/udp_transport.zig` | RFC 9001 §6.1, §6.2 | **Fixed** (v0.1.52, SONNY-6522) |
+| NEWGAP-13 | High | security | An undecryptable 1-RTT packet cost ~85 header protection removals and AEAD opens (every DCID length 0..20 with each key set, then forced next-key attempts) | `src/quic/endpoint/incoming/module_b.zig` | RFC 9001 §5.4, §6.3, §9.5 | **Fixed** (v0.1.53, SONNY-6649) |
+| NEWGAP-14 | High | liveness | 1-RTT packet numbers were always 2 bytes: after more than 2^15 consecutive lost packets every later packet decoded wrong and failed AEAD | 1-RTT encode sites, `src/quic/conn.zig` | RFC 9000 §17.1, Appendix A.2 | **Fixed** (v0.1.53, SONNY-6649) |
+| NEWGAP-15 | Medium | liveness | A stream retransmission sent after the previous one started a key update carried the new key phase but the old keys | `src/quic/connection/methods_b.zig` | RFC 9001 §6 | **Fixed** (v0.1.53, SONNY-6649) |
+| NEWGAP-16 | Medium | conformance | A client initiated key updates before the handshake was confirmed | `src/quic/connection/methods_b.zig` | RFC 9001 §6.1 | **Fixed** (v0.1.53, SONNY-6649) |
+| NEWGAP-17 | Medium | conformance | HANDSHAKE_DONE was sent once and never retransmitted | `src/quic/connection/methods_a.zig`, `src/quic/connection/ctrl_retx.zig` | RFC 9000 §13.3 | **Fixed** (v0.1.53, SONNY-6649) |
+| NEWGAP-18 | Medium | conformance | Previous receive keys kept for 16 packets opened with them, not three PTOs; a packet the current keys opened with the other phase bit promoted the keys | `src/quic/endpoint/incoming/module_b.zig` | RFC 9001 §6.3, §6.5 | **Fixed** (v0.1.53, SONNY-6649) |
+| NEWGAP-19 | Medium | liveness | The out-of-order segment cap counted STREAM frames: small frames behind one lost packet were a FLOW_CONTROL_ERROR | `src/quic/connection/methods_a.zig`, `src/quic/connection/stream.zig` | RFC 9000 §4.1 | **Fixed** (v0.1.53, SONNY-6649) |
+| NEWGAP-20 | Medium | interop | The Zig client does not complete a handshake with a quic-go server, and a Zig server <-> quic-go client transfer fails | `cmd/qns-endpoint.zig`, client handshake path | RFC 9000, RFC 9001 | **Open** |
+| NEWGAP-21 | Low | conformance | NEW_CONNECTION_ID frames are not retransmitted when lost (not tracked by the control-frame retransmission) | `src/quic/connection/methods_a.zig`, `src/quic/connection/ctrl_retx.zig` | RFC 9000 §13.3 | **Open** |
+| NEWGAP-22 | Low | concurrency | The PMTUD timer sends 1-RTT packets without the connection mutex (latent: PMTUD is only started by tests) | `src/quic/endpoint.zig` | — | **Fixed** (v0.1.53, SONNY-4379) |
+| NEWGAP-23 | Low | concurrency | 1-RTT packets sent in the step that completes the handshake (HANDSHAKE_DONE from `pushCrypto`/`deriveAppKeys`, an Initial-path CONNECTION_CLOSE) are still sent without the connection mutex | `src/quic/connection/methods_a.zig`, `src/quic/connection/methods_b.zig`, `src/quic/endpoint/incoming.zig` | RFC 9000 §12.3 | **Open** |
+| NEWGAP-24 | Low | benchmark integrity | `flush_cadence` and `datagram_batch` still return placeholder rows for runtime failures other than credentials (e.g. a starved server) | `benchmarks/integration/flush_cadence.zig`, `benchmarks/integration/datagram_batch.zig` | — | **Open** |
 
 ### NEWGAP-01: Received CID transport parameters not authenticated against on-wire CIDs
 
@@ -253,6 +265,99 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
   2. **Accepted connection never handed to the application: SO_REUSEADDR on the UDP socket.** A server endpoint bound its fixed port with SO_REUSEADDR, so a second socket could bind the same address and port while the first was open, and Linux then delivered unicast datagrams to the newer socket only. Two runs of the same test binary use the same ports; the second server took over the first's client, acknowledged everything, and the first server's `tryAccept` never returned a connection. The same applies to a restarted process that overlaps the old one or to another local user binding a live server's port. UDP has no TIME_WAIT, so SO_REUSEADDR is no longer set; a second bind of a live port fails with `BindFailed`.
 
   Not every failure in that sweep was a stall: several Debug runs had delivered 17–48 MiB of 64 MiB when the 261 s budget (0.25 MiB/s) ran out, which 2-CPU starvation alone explains. After the fix, 10 Debug runs of `test-large-stream-flow-control` on 2 CPUs with 16 busy loops all passed.
+
+### NEWGAP-13: undecryptable 1-RTT packets cost ~85 decryption attempts
+
+- **Severity:** High
+- **Category:** security (CPU amplification)
+- **RFC:** RFC 9001 §5.4, §6 ("The header protection keys are not updated"), §6.3, §9.5
+- **Location:** `src/quic/endpoint/incoming/module_b.zig` (`decryptShortHeaderWithKeyRotation`)
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). The receive path did not trust the DCID length or the key phase bit: for every 1-RTT packet that failed it tried each DCID length 0..20 with the current, a "hybrid" current/next, the next and the previous keys, then 21 forced next-key attempts. 256 forged packets sent on a live connection's path cost 21504 attempts (84 per packet). The DCID is a connection ID the receiver issued and the connection lookup matched it, so its length is known; the HP key never changes, so the key phase bit read after removing header protection selects one key set. Now one header protection removal and at most one AEAD open per packet (`zig build test-rx-packet-protection`).
+
+### NEWGAP-14: 2-byte packet numbers misdecoded after a long loss
+
+- **Severity:** High
+- **Category:** liveness
+- **RFC:** RFC 9000 §17.1, Appendix A.2, A.3
+- **Location:** every 1-RTT `encodeShortProtectedInto` call site; `Connection.appPacketNumberLen`
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). Every 1-RTT packet used a 2-byte packet number whatever the gap to the largest acknowledged. When more than 2^15 packets in a row were lost (the loopback congestion-window exemption allows that many in flight), the receiver decoded the next packet 65536 too low, its nonce was wrong and so was every later packet's. The length now follows Appendix A.2 (at least 2 bytes); the packet number passed to the encoder is u64. Reproduced with a relay blackout of packets [40000, 73000).
+
+### NEWGAP-15: stream retransmission with stale send keys
+
+- **Severity:** Medium
+- **Category:** liveness
+- **RFC:** RFC 9001 §6
+- **Location:** `src/quic/connection/methods_b.zig` (`retransmitLostStreamPackets`)
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). The send keys were copied once for up to two retransmissions per ACK; when the first started a key update, the second carried the new key phase with the old keys and was undecryptable (under the receive path before NEWGAP-13's fix it promoted the peer's keys a generation ahead). Each retransmission now reads the keys with the key phase.
+
+### NEWGAP-16: key update before handshake confirmation
+
+- **Severity:** Medium
+- **Category:** conformance
+- **RFC:** RFC 9001 §6.1, §4.1.2
+- **Location:** `src/quic/connection/methods_b.zig` (`maybeTriggerKeyUpdateOnSend`)
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). A client sending 1-RTT data before HANDSHAKE_DONE arrived initiated a key update after 512 packets. Key updates now wait for confirmation (client: HANDSHAKE_DONE received; server: handshake complete).
+
+### NEWGAP-17: HANDSHAKE_DONE not retransmitted
+
+- **Severity:** Medium
+- **Category:** conformance
+- **RFC:** RFC 9000 §13.3
+- **Location:** `src/quic/connection/methods_a.zig`, `src/quic/connection/methods_b.zig`, `src/quic/connection/ctrl_retx.zig`
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). The server sent HANDSHAKE_DONE once; when that packet was lost the client never confirmed the handshake (and, after NEWGAP-16's fix, never initiated a key update). The packet carrying it is now tracked (`handshake_done_pn`) and HANDSHAKE_DONE resent when it is lost.
+
+### NEWGAP-18: previous receive keys kept by packet count
+
+- **Severity:** Medium
+- **Category:** conformance
+- **RFC:** RFC 9001 §6.3, §6.5
+- **Location:** `src/quic/endpoint/incoming/module_b.zig` (`promoteToNextKeys`)
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). The previous receive keys were kept until 16 packets had been opened with them: later reordered packets were dropped however soon they came, and without reordering the keys stayed for the whole generation. They are now kept for three PTOs after the first packet under the new keys (`rx_prev_discard_ns`). A packet that the current keys opened with the other key phase bit used to promote the keys; keys are now selected by the phase bit (NEWGAP-13), so that cannot happen.
+
+### NEWGAP-19: out-of-order cap counted frames
+
+- **Severity:** Medium
+- **Category:** liveness
+- **RFC:** RFC 9000 §4.1
+- **Location:** `src/quic/connection/methods_a.zig` (`max_ooo_segments`), `src/quic/connection/stream.zig` (`StreamRx.insert`)
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). Each STREAM frame received out of order was a buffered segment and the 16385th was a FLOW_CONTROL_ERROR, so a peer sending small frames lost its connection after one lost packet (16-byte frames: after 256 KiB of a 16 MiB window). Contiguous data is now coalesced into one segment; the cap bounds gaps.
+
+### NEWGAP-20: interop failures with quic-go
+
+- **Severity:** Medium
+- **Category:** interop
+- **Location:** client handshake path, `cmd/qns-endpoint.zig`
+- **Status:** **Open** (found with SONNY-6649). The interop-test job reported success whatever happened; it now generates the certificates and checks the outcome. Of its four cases, only Zig server <-> quic-go client (handshake) passes. The Zig client times out against a quic-go server, which answers its Initial with a coalesced Initial + Handshake + 1-RTT datagram (the client sends 7 Initials and never completes), and Zig server <-> quic-go client transfer fails with client exit 1. Same result on v0.1.52.
+
+### NEWGAP-21: NEW_CONNECTION_ID not retransmitted
+
+- **Severity:** Low
+- **Category:** conformance
+- **RFC:** RFC 9000 §13.3
+- **Location:** `src/quic/connection/methods_a.zig` (`sendHandshakeDoneControl`), `src/quic/connection/ctrl_retx.zig`
+- **Status:** **Open** (found with SONNY-6649). NEW_CONNECTION_ID frames, including those in the packet that carries HANDSHAKE_DONE, are not tracked by the control-frame retransmission, so a lost one is not sent again.
+
+### NEWGAP-22: PMTUD timer sends without the connection mutex
+
+- **Severity:** Low
+- **Category:** concurrency (latent)
+- **Location:** `src/quic/endpoint.zig` (timer dispatch, `.Pmtud`)
+- **Status:** **Fixed** (v0.1.53, SONNY-4379). Unlike the PTO timers, the PMTUD timer called `pmtudOnTimer` without `Connection.mu`; a probe took a packet number and read the send keys concurrently with application writes. Not reachable before either (only `tests/test_pmtud.zig` starts PMTUD); it now takes the mutex with the other unserialized senders of SONNY-4379.
+
+### NEWGAP-23: handshake-completion sends without the connection mutex
+
+- **Severity:** Low
+- **Category:** concurrency
+- **RFC:** RFC 9000 §12.3, RFC 9001 §5.3
+- **Location:** `sendHandshakeDoneControl` and `deriveAppKeys` (via `pushCrypto`), the CONNECTION_CLOSE in `processInitialResolved`
+- **Status:** **Open** (found with SONNY-4379). SONNY-4379 put every steady-state 1-RTT sender under `Connection.mu`. These remain: they run in the receive step that completes the handshake, before the application can usually send on the connection, and deep in the TLS call chain, where taking the mutex needs its own lock-order audit.
+
+### NEWGAP-24: benchmark placeholders for runtime failures
+
+- **Severity:** Low
+- **Category:** benchmark integrity
+- **Location:** `benchmarks/integration/flush_cadence.zig`, `benchmarks/integration/datagram_batch.zig` (`placeholderOutput`)
+- **Status:** **Open** (found with SONNY-4381). Missing or invalid credentials and a server that does not start now yield not-measured rows that fail the perf gate. Other failures in these two scenarios (e.g. a starved server) still return placeholder numbers; they should be not-measured too. Neither scenario is in the CI perf gate (`--suite=micro`).
 
 ### Second-pass additions
 

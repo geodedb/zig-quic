@@ -3002,8 +3002,11 @@ pub const Endpoint = struct {
         _ = self.conns.put(new_key, c) catch |err| {
             logger.debugPrint("[ENDPOINT] path migration map insert failed: {s}\n", .{@errorName(err)});
         };
-        // Trigger PATH_CHALLENGE if 1-RTT keys are available (§9.3):
+        // Trigger PATH_CHALLENGE if 1-RTT keys are available (§9.3), under
+        // Connection.mu like every 1-RTT send (SONNY-4379):
+        c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         c.sendPathChallenge();
+        c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         logger.debugPrint("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
         return true;
     }
@@ -3226,6 +3229,10 @@ pub const Endpoint = struct {
                 },
                 .Pmtud => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
+                    // A PMTUD probe is a 1-RTT packet: under Connection.mu
+                    // like the PTO probes above (SONNY-4379, NEWGAP-22).
+                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     c.pmtudOnTimer(self);
                 },
             }
@@ -3348,10 +3355,13 @@ pub const Endpoint = struct {
         for (to_sweep_stale.items) |c| self.closeStaleConnectionsForPeer(c);
         for (to_close.items) |c| {
             if (c.closed) continue; // may have been closed by a stale sweep above
+            // Under Connection.mu, as every 1-RTT send (SONNY-4379).
+            c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             c.sendConnectionClose(0x00, "idle: no packets within dead_conn_reap budget") catch |err| {
                 logger.warn("reapDeadConnections: sendConnectionClose failed: {s}", .{@errorName(err)});
             };
             c.markClosed();
+            c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             logger.warn("quic: reaped dead connection — peer silent past {d}ms reap budget", .{reap_ms});
         }
     }

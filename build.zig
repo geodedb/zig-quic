@@ -1065,6 +1065,26 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "long_transfer_liveness")) return;
 
+    // SONNY-6649: 1-RTT packet protection on the receive path (one key set
+    // per packet, chosen by the key phase), packet number lengths on the
+    // send path (RFC 9000 §17.1) and key update rules (RFC 9001 §6). Real
+    // endpoints over a loopback UDP relay.
+    const test_rx_packet_protection = addTst(b, testlog_mod, compat_mod, "tests/test_rx_packet_protection.zig", target, optimize);
+    test_rx_packet_protection.root_module.addImport("quic_api", quic_api_mod);
+    test_rx_packet_protection.root_module.addImport("quic_config", quic_config_mod);
+    test_rx_packet_protection.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_rx_packet_protection.root_module.addImport("test_certs", test_certs_mod);
+    test_rx_packet_protection.root_module.addImport("quic_build_options", build_options_mod);
+    test_rx_packet_protection.root_module.addImport("quic_packet", quic_packet_mod);
+    test_rx_packet_protection.root_module.addImport("quic_frame", quic_frame_mod);
+    const run_test_rx_packet_protection = b.addRunArtifact(test_rx_packet_protection);
+    const rx_packet_protection_step = b.step("test-rx-packet-protection", "Test 1-RTT packet protection, packet number lengths and key update rules against real endpoints");
+    rx_packet_protection_step.dependOn(&run_test_rx_packet_protection.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "rx_packet_protection")) {
+        test_step.dependOn(&run_test_rx_packet_protection.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "rx_packet_protection")) return;
+
     // SONNY-6454: loss detection and persistent congestion per RFC 9002.
     const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
     test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);
@@ -2960,6 +2980,20 @@ pub fn build(b: *std.Build) void {
     const run_bench_compare_test = b.addRunArtifact(bench_compare_test);
     const bench_compare_test_step = b.step("test-bench-compare", "Run bench comparator tests");
     bench_compare_test_step.dependOn(&run_bench_compare_test.step);
+    // SONNY-4381: a row that could not be measured, on either side, fails the
+    // gate (exit 1) instead of comparing placeholder numbers.
+    for ([_][2][]const u8{
+        .{ "tests/fixtures/bench/measured.json", "tests/fixtures/bench/not_measured.json" },
+        .{ "tests/fixtures/bench/not_measured.json", "tests/fixtures/bench/measured.json" },
+    }) |pair| {
+        const gate_run = b.addRunArtifact(bench_compare);
+        gate_run.addArg("--baseline");
+        gate_run.addFileArg(b.path(pair[0]));
+        gate_run.addArg("--current");
+        gate_run.addFileArg(b.path(pair[1]));
+        gate_run.expectExitCode(1);
+        bench_compare_test_step.dependOn(&gate_run.step);
+    }
 
     // Benchmark suite dispatcher. Scenarios are registered in
     // benchmarks/bench_runner.zig's `registry`; each registry entry picks a

@@ -444,6 +444,9 @@ pub fn main(init: std.process.Init) !void {
 
     const stdout = std.Io.File.stdout();
     var history: std.StringArrayHashMapUnmanaged(RowHistory) = .empty;
+    // Rows that could not be measured on either side, over all rounds
+    // (SONNY-4381). Each fails the gate: nothing was compared.
+    var not_measured_rows: usize = 0;
 
     for (baseline_paths.items, current_paths.items, 1..) |baseline_path, current_path, round| {
         const baseline_doc = try readDocument(allocator, init.io, baseline_path);
@@ -485,12 +488,27 @@ pub fn main(init: std.process.Init) !void {
         var noise_rows: usize = 0;
 
         for (current_doc.value.rows) |cur| {
+            // A row that could not be measured (SONNY-4381: missing or
+            // invalid server credentials, a server that did not start) fails
+            // the gate. Its numbers are zero and mean nothing, so it is never
+            // compared and can never pass.
+            const base_opt = findMatch(baseline_doc.value.rows, cur);
+            const unmeasured: ?[]const u8 = cur.not_measured orelse if (base_opt) |b| b.not_measured else null;
+            if (unmeasured) |reason| {
+                not_measured_rows += 1;
+                failures += 1;
+                const side: []const u8 = if (cur.not_measured != null) "current" else "baseline";
+                const line = try std.fmt.allocPrint(allocator, "| {s} | {s} | - | - | - | - | - | - | - | NOT-MEASURED ({s}: {s}) |\n", .{ cur.scenario_name, cur.variant, side, reason });
+                try stdout.writeStreamingAll(init.io, line);
+                continue;
+            }
+
             // Skip external rows whose toolchain was unavailable — the placeholder
             // (iterations=1, wall_time_ns=1ms, latencies=[0]) produces garbage
             // numbers that would false-positive against a real baseline.
             if (isSkipRow(cur)) continue;
 
-            const base = findMatch(baseline_doc.value.rows, cur) orelse continue;
+            const base = base_opt orelse continue;
             if (isSkipRow(base)) continue;
 
             const e = evaluateRow(base, cur);
@@ -590,7 +608,11 @@ pub fn main(init: std.process.Init) !void {
         );
         try stdout.writeStreamingAll(init.io, summary);
     }
-    if (failures > 0) std.process.exit(1);
+    if (not_measured_rows > 0) {
+        const msg = try std.fmt.allocPrint(allocator, "\nNOT-MEASURED: {d} row(s) could not be measured; the gate cannot pass without them.\n", .{not_measured_rows});
+        try stdout.writeStreamingAll(init.io, msg);
+    }
+    if (failures > 0 or not_measured_rows > 0) std.process.exit(1);
 }
 
 fn sepLabel(separated: bool) []const u8 {
@@ -609,6 +631,11 @@ fn findMatch(rows: []const common.ResultRow, cur: common.ResultRow) ?common.Resu
             std.mem.eql(u8, row.variant, cur.variant)) return row;
     }
     return null;
+}
+
+/// A row whose scenario could not measure (SONNY-4381).
+pub fn isNotMeasured(row: common.ResultRow) bool {
+    return row.not_measured != null;
 }
 
 /// External rows whose toolchain was unavailable land here with an

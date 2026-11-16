@@ -110,8 +110,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 frames.items,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,

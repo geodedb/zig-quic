@@ -30,10 +30,21 @@ const PacketNumberSpace = enum { Initial, Handshake, Application };
 /// STREAMS_BLOCKED value is a FRAME_ENCODING_ERROR.
 const max_streams_limit: u64 = 1 << 60;
 
+/// Send CONNECTION_CLOSE under Connection.mu. Frame handlers run on the
+/// receive path without it (module_c releases it before processFrames), and a
+/// 1-RTT packet takes a packet number: sent unserialized, it could share one
+/// (and its AEAD nonce) with a packet an application thread sends (SONNY-4379).
+fn sendCloseLocked(ctx: *FrameContext, code: u64, reason: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    ctx.conn.mu.lockUncancelable(io);
+    defer ctx.conn.mu.unlock(io);
+    return ctx.conn.sendConnectionClose(code, reason);
+}
+
 /// Close the connection with FRAME_ENCODING_ERROR (0x07) and report the close.
 /// Used for malformed frame-level violations (e.g. MAX_STREAMS > 2^60).
 fn closeFrameEncodingError(ctx: *FrameContext) FrameResult {
-    ctx.conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |err| {
+    sendCloseLocked(ctx, 0x07, "FRAME_ENCODING_ERROR") catch |err| {
         logger.debugPrint("Failed to send CONNECTION_CLOSE (FRAME_ENCODING_ERROR): {}\n", .{err});
         ctx.conn.markClosed();
     };
@@ -43,7 +54,7 @@ fn closeFrameEncodingError(ctx: *FrameContext) FrameResult {
 /// Close the connection with STREAM_STATE_ERROR (0x05) and report the close.
 /// Close the connection with a transport error code and report the close.
 fn closeWithError(ctx: *FrameContext, code: u64, reason: []const u8) FrameResult {
-    ctx.conn.sendConnectionClose(code, reason) catch |err| {
+    sendCloseLocked(ctx, code, reason) catch |err| {
         logger.debugPrint("Failed to send CONNECTION_CLOSE ({s}): {}\n", .{ reason, err });
         ctx.conn.markClosed();
     };
@@ -51,7 +62,7 @@ fn closeWithError(ctx: *FrameContext, code: u64, reason: []const u8) FrameResult
 }
 
 fn closeStreamStateError(ctx: *FrameContext) FrameResult {
-    ctx.conn.sendConnectionClose(0x05, "STREAM_STATE_ERROR") catch |err| {
+    sendCloseLocked(ctx, 0x05, "STREAM_STATE_ERROR") catch |err| {
         logger.debugPrint("Failed to send CONNECTION_CLOSE (STREAM_STATE_ERROR): {}\n", .{err});
         ctx.conn.markClosed();
     };
@@ -134,7 +145,7 @@ pub fn handleNewConnectionId(
         // RFC 9000 §5.1.1 (NEWGAP-03): peer exceeded our advertised
         // active_connection_id_limit. Close with CONNECTION_ID_LIMIT_ERROR (0x09).
         error.ConnectionIdLimitError => {
-            ctx.conn.sendConnectionClose(0x09, "CONNECTION_ID_LIMIT_ERROR") catch |close_err| {
+            sendCloseLocked(ctx, 0x09, "CONNECTION_ID_LIMIT_ERROR") catch |close_err| {
                 logger.debugPrint("Failed to send CONNECTION_CLOSE for CID limit: {}\n", .{close_err});
                 ctx.conn.markClosed();
             };
@@ -178,11 +189,11 @@ pub fn handleStream(
         logger.debugPrint("ERROR: pushStreamFrame failed: {}\n", .{err});
         // RFC 9000 §4.1-§4.2: a receive-side flow-control violation is a
         // connection error of type FLOW_CONTROL_ERROR (0x03). Emit the
-        // CONNECTION_CLOSE here (pushStreamFrame has released conn.mu by now,
-        // and sendConnectionClose does not take it) and report the close so the
-        // receive path stops processing this connection.
+        // CONNECTION_CLOSE here (pushStreamFrame has released conn.mu by now;
+        // sendCloseLocked takes it) and report the close so the receive path
+        // stops processing this connection.
         if (err == error.FlowControlError) {
-            ctx.conn.sendConnectionClose(0x03, "FLOW_CONTROL_ERROR") catch |close_err| {
+            sendCloseLocked(ctx, 0x03, "FLOW_CONTROL_ERROR") catch |close_err| {
                 logger.debugPrint("Failed to send CONNECTION_CLOSE for flow-control error: {}\n", .{close_err});
                 ctx.conn.markClosed();
             };
@@ -214,6 +225,9 @@ pub fn handleDatagram(
 
     // Optional DATAGRAM echo response (test/debugging feature)
     if (ctx.cfg.enable_datagram) {
+        // Every 1-RTT packet is sent under Connection.mu (SONNY-4379).
+        ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (ctx.conn.app_tx_keys) |txk| {
             var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(ctx.allocator.*);
@@ -230,8 +244,8 @@ pub fn handleDatagram(
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
                 dcid_sh,
-                @as(u32, @truncate(ctx.conn.pn_app_tx)),
-                2,
+                ctx.conn.pn_app_tx,
+                ctx.conn.appPacketNumberLen(ctx.conn.pn_app_tx),
                 fb.items,
                 txk,
                 ctx.conn.tx_key_phase,
@@ -458,6 +472,10 @@ pub fn handleMaxStreamsUni(
 /// the peer has exhausted the initial_max_data allowance.
 pub fn handleDataBlocked(ctx: *FrameContext, db: frame.DataBlocked) FrameResult {
     _ = db;
+    // The MAX_DATA answer is a 1-RTT packet: send it under Connection.mu like
+    // every other (SONNY-4379).
+    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     // Expand the connection-level receive window by the initial window size.
     // This ensures the peer can always send more data.
     const conn_receive_window: u64 = 10 * 1024 * 1024; // 10MB
@@ -500,6 +518,11 @@ pub fn handlePathChallenge(
     ctx: *FrameContext,
     pcv: frame.PathChallenge,
 ) !FrameResult {
+    // PATH_RESPONSE is a 1-RTT packet: send it under Connection.mu like
+    // every other, or it can share a packet number (and AEAD nonce) with a
+    // packet an application thread sends (SONNY-4379).
+    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     if (ctx.conn.app_tx_keys) |txk| {
         var fb: std.ArrayList(u8) = .empty;
         defer fb.deinit(ctx.allocator.*);
@@ -516,8 +539,8 @@ pub fn handlePathChallenge(
         const pkt_len = packet.encodeShortProtectedInto(
             packet_storage,
             dcid_sh2,
-            @as(u32, @truncate(ctx.conn.pn_app_tx)),
-            2,
+            ctx.conn.pn_app_tx,
+            ctx.conn.appPacketNumberLen(ctx.conn.pn_app_tx),
             fb.items,
             txk,
             ctx.conn.tx_key_phase,

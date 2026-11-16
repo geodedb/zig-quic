@@ -63,6 +63,9 @@ variables:
 .install-zig: &install-zig
   - apt-get update && apt-get install -y curl xz-utils python3
   - |
+    if [ "$(uname -s)" = Linux ] && [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+      apt-get update && apt-get install -y --no-install-recommends ca-certificates
+    fi
     if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
       ARCH=$(uname -m)
       case "$ARCH" in
@@ -562,7 +565,7 @@ interop-test:
     DOCKER_CERT_PATH: "/certs/client"
     COMPOSE_PROJECT_NAME: "interop_ci_${CI_JOB_ID}"
   before_script:
-    - apk add --no-cache bash git curl
+    - apk add --no-cache bash git curl openssl
     - mkdir -p "$HOME/.docker/cli-plugins"
     - DOCKER_COMPOSE_VERSION="v5.5.1"
     - DOCKER_COMPOSE_SHA256="db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576"
@@ -590,6 +593,13 @@ interop-test:
     - git -C examples/interop/quic-interop-runner fetch --depth 1 origin "${QUIC_INTEROP_RUNNER_COMMIT}"
     - git -C examples/interop/quic-interop-runner checkout --detach FETCH_HEAD
     - test "$(git -C examples/interop/quic-interop-runner rev-parse HEAD)" = "${QUIC_INTEROP_RUNNER_COMMIT}"
+    # The certificate both servers load from /certs (the runner's certs.sh,
+    # as quic-interop-runner does). The endpoints run unprivileged in their
+    # containers: the test key must be readable and the log and download
+    # directories writable by them.
+    - (cd examples/interop/quic-interop-runner && ./certs.sh certs 1 >/dev/null 2>&1)
+    - test -s examples/interop/quic-interop-runner/certs/cert.pem
+    - chmod -R a+rX examples/interop/quic-interop-runner/certs
     - mkdir -p examples/interop/quic-network-simulator/logs/sim
     - mkdir -p examples/interop/quic-network-simulator/logs/server
     - mkdir -p examples/interop/quic-network-simulator/logs/client
@@ -598,6 +608,7 @@ interop-test:
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/index.html bs=1024 count=1 2>/dev/null
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/5000 bs=5000 count=1 2>/dev/null
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/10000 bs=10000 count=1 2>/dev/null
+    - chmod -R a+rwX examples/interop/quic-network-simulator
   script:
     - docker build -f examples/interop/zig-qns/Dockerfile -t zig-qns:local .
     - test "$(docker run --rm -e INTEROP_PRIVILEGE_CHECK=1 zig-qns:local)" = "quic"
@@ -626,18 +637,48 @@ interop-test:
         return 1
       }
 
+      SIM_DIR="examples/interop/quic-network-simulator"
+      results=""
+      failed=0
+
+      # A case passes when the client exits 0 and every requested file
+      # arrived intact (the quic-interop-runner checks for handshake and
+      # transfer). A failure is reported, not swallowed.
       run_case() {
         title="$1"
         server_image="$2"
         client_image="$3"
         testcase="$4"
+        files="$5"
 
         echo "=== Test: ${title} ==="
         compose rm -fsv server client >/dev/null 2>&1 || true
+        rm -f "${SIM_DIR}"/downloads/*
+        requests=""
+        for f in ${files}; do requests="${requests:+${requests} }https://server4/${f}"; done
         export SERVER_IMAGE="${server_image}"
         export CLIENT_IMAGE="${client_image}"
         export TESTCASE="${testcase}"
-        timeout 120 docker compose -f "${COMPOSE_FILE}" --profile generic up --abort-on-container-exit --timeout 30 server client || true
+        export REQUESTS="${requests}"
+        rc=0
+        timeout 120 docker compose -f "${COMPOSE_FILE}" --profile generic up --abort-on-container-exit --exit-code-from client --timeout 30 server client || rc=$?
+        verdict="PASS"
+        reason=""
+        if [ "${rc}" -ne 0 ]; then
+          verdict="FAIL"
+          reason="client exit ${rc}"
+        else
+          for f in ${files}; do
+            if ! cmp -s "${SIM_DIR}/www/${f}" "${SIM_DIR}/downloads/${f}"; then
+              verdict="FAIL"
+              reason="${reason:+${reason}, }${f} missing or different"
+            fi
+          done
+        fi
+        [ "${verdict}" = "PASS" ] || failed=$((failed + 1))
+        echo "=== ${verdict}: ${title}${reason:+ (${reason})} ==="
+        results="${results}${verdict}  ${title}${reason:+ (${reason})}
+      "
       }
 
       cleanup() {
@@ -648,11 +689,17 @@ interop-test:
       compose up -d sim
       wait_for_sim
 
-      run_case "Zig server <-> quic-go client (handshake)" "zig-qns:local" "${QUIC_GO_IMAGE}" "handshake"
-      run_case "quic-go server <-> Zig client (handshake)" "${QUIC_GO_IMAGE}" "zig-qns:local" "handshake"
-      run_case "Zig server <-> quic-go client (transfer)" "zig-qns:local" "${QUIC_GO_IMAGE}" "transfer"
-      run_case "quic-go server <-> Zig client (transfer)" "${QUIC_GO_IMAGE}" "zig-qns:local" "transfer"
-    - echo "Interop tests completed"
+      run_case "Zig server <-> quic-go client (handshake)" "zig-qns:local" "${QUIC_GO_IMAGE}" "handshake" "5000"
+      run_case "quic-go server <-> Zig client (handshake)" "${QUIC_GO_IMAGE}" "zig-qns:local" "handshake" "5000"
+      run_case "Zig server <-> quic-go client (transfer)" "zig-qns:local" "${QUIC_GO_IMAGE}" "transfer" "5000 10000"
+      run_case "quic-go server <-> Zig client (transfer)" "${QUIC_GO_IMAGE}" "zig-qns:local" "transfer" "5000 10000"
+
+      echo "=== Interop results ==="
+      printf '%s' "${results}"
+      if [ "${failed}" -ne 0 ]; then
+        echo "${failed} interop case(s) failed" >&2
+        exit 1
+      fi
   artifacts:
     when: always
     paths:
@@ -760,10 +807,15 @@ stress-integration-20x:
       allow_failure: true
   cache: *quic-zig-cache
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends git libssl-dev jq
+    - apt-get update && apt-get install -y --no-install-recommends git libssl-dev jq openssl
     - *install-zig
   script:
     - mkdir -p stress-results
+    # The TLS benches load tests/certs/{cert,key}.pem; without them every
+    # row is not measured (SONNY-4381).
+    - mkdir -p tests/certs
+    - openssl ecparam -genkey -name prime256v1 -out tests/certs/key.pem
+    - openssl req -new -x509 -key tests/certs/key.pem -out tests/certs/cert.pem -days 1 -subj "/CN=localhost/O=Test/C=US" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
     - zig build
     - |
       set -e
@@ -780,6 +832,11 @@ stress-integration-20x:
           # Reject any SKIP row (indicates setup / toolchain failure).
           if jq -e '.rows[] | select(.variant | endswith("-SKIP"))' "${OUT}" >/dev/null; then
             echo "[stress] FAIL: ${suite} round ${i} produced SKIP row(s) -- setup failure"
+            FAILED=$((FAILED+1))
+          fi
+          # Reject any row that could not be measured (SONNY-4381).
+          if jq -e '.rows[] | select(.not_measured != null)' "${OUT}" >/dev/null; then
+            echo "[stress] FAIL: ${suite} round ${i} produced not-measured row(s): $(jq -r '[.rows[] | select(.not_measured != null) | .not_measured] | unique | join(",")' "${OUT}")"
             FAILED=$((FAILED+1))
           fi
         done

@@ -20,16 +20,6 @@ const enumerateDcidLength = incoming_a.enumerateDcidLength;
 const RxContext = shared.RxContext;
 const SendFn = shared.SendFn;
 
-fn addDcidCandidate(len: u8, list: []u8, count: *usize, max_len: u8) void {
-    if (len > max_len) return;
-    var idx: usize = 0;
-    while (idx < count.*) : (idx += 1) {
-        if (list[idx] == len) return;
-    }
-    list[count.*] = len;
-    count.* += 1;
-}
-
 fn invalidSocket() posix.socket_t {
     if (comptime @import("builtin").os.tag == .windows) {
         return @ptrFromInt(~@as(usize, 0));
@@ -457,6 +447,10 @@ fn processHandshakeResolvedWithHeader(
         defer done_frames.deinit(ctx.allocator.*);
         const dw = @import("compat").arrayListWriter(&done_frames, ctx.allocator.*);
         _ = (frame.Frame{ .handshake_done = {} }).write(dw) catch 0;
+        // A 1-RTT packet, sent while the application may already be sending
+        // on this connection: under Connection.mu (SONNY-4379).
+        conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer conn.*.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         conn.*.sendControlFrames(done_frames.items);
     }
 }
@@ -584,58 +578,40 @@ pub const ShortDecryptResult = struct {
     dcid_len: u8,
 };
 
-/// Decrypt short header packet with systematic DCID enumeration and key rotation.
-/// Extracted from endpoint.zig lines 1198-1318 (Phase 4b.5 Session 3).
+/// Decrypt a 1-RTT (short header) packet: remove header protection once,
+/// then open the packet with the one key set its key phase selects.
 ///
-/// RFC 9000 §17.3: "Short headers do not include a length, so the DCID length
-/// must be known through other means."
+/// RFC 9000 §17.3.1: a short header does not carry the DCID length; the
+/// receiver knows it, because the DCID is a connection ID it issued. The
+/// lookup that found `conn` matched it, so `dcid_len` is authoritative.
 ///
-/// This function implements Bug #6 fix: systematic DCID length enumeration 0-20
-/// to discover the actual DCID length when cached value fails.
+/// RFC 9001 §6: "The header protection keys are not updated", so removing
+/// header protection with the current HP key yields the real key phase bit
+/// whatever key generation protects the packet. Key selection (§6.3, §6.5):
+/// - key phase equal to the current receive phase: the current keys;
+/// - otherwise, a packet number below the first one decrypted with the
+///   current keys: the previous keys, while they are retained;
+/// - otherwise: the next keys, pre-derived so that a key update costs no
+///   more than any other packet (§6.3, §9.5).
 ///
-/// RFC 9001 §6: "Endpoints can use multiple packets to send data and can update
-/// keys to improve forward secrecy and confidentiality. Packets protected with
-/// updated keys are sent with a different packet number space."
-///
-/// Key rotation strategy:
-/// 1. Try current app_rx_keys with cached/heuristic DCID length
-/// 2. On auth failure, try all DCID lengths 0-20 systematically
-/// 3. On auth failure, derive NEXT keys and retry
-/// 4. On auth failure, try previous keys (rx_prev_keys)
-/// 5. Cache successful DCID length for future packets
-/// 6. Promote to NEXT keys if decryption succeeded with them
-///
-/// Parameters:
-/// - allocator: Memory allocator for decrypted payload
-/// - conn: Connection with app_rx_keys, app_rx_secret, rx_prev_keys
-/// - bytes: Raw 1-RTT packet bytes (short header)
-/// - try_dcid_len: Initial DCID length to try (from cache or connection match)
+/// One header protection removal and at most one AEAD open per packet, so
+/// an off-path sender of undecryptable packets causes no more work than a
+/// peer does. Each failed open counts toward the integrity limit (§6.6).
 ///
 /// Returns:
-/// - ShortDecryptResult with decoded payload, key rotation flags, actual dcid_len
-/// - error.AuthenticationFailed if all key attempts fail
-/// - error.StatelessReset if packet matches stateless reset token
+/// - ShortDecryptResult with the decoded payload and which keys opened it
+/// - error.AuthenticationFailed if the selected keys do not open the packet
+/// - error.StatelessReset if the packet matches a stateless reset token
 pub fn decryptShortHeaderWithKeyRotation(
     allocator: std.mem.Allocator,
     conn: *conn_mod.Connection,
     bytes: []const u8,
-    try_dcid_len: u8,
-) !ShortDecryptResult {
-    return decryptShortHeaderWithKeyRotationInternal(allocator, conn, bytes, try_dcid_len, false);
-}
-
-fn decryptShortHeaderWithKeyRotationInternal(
-    allocator: std.mem.Allocator,
-    conn: *conn_mod.Connection,
-    bytes: []const u8,
-    try_dcid_len: u8,
-    forced_attempted: bool,
+    dcid_len: u8,
 ) !ShortDecryptResult {
     const rx_keys = conn.app_rx_keys orelse return error.NoApplicationKeys;
 
     // RFC 9000 Appendix A.3: Pass largest received PN for expansion
     const largest_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max else 0;
-    const should_log_attempts = largest_pn >= 80;
 
     // Ensure NEXT keys are always pre-derived so we can decode peer-initiated key updates
     if (conn.app_rx_next_keys == null and conn.app_rx_secret != null) {
@@ -647,311 +623,76 @@ fn decryptShortHeaderWithKeyRotationInternal(
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
     }
 
-    var used_next = false;
-    var used_prev = false;
-    var actual_dcid_len = try_dcid_len;
-    var decode_scratch: [4096]u8 = undefined;
+    if (conn.looksLikeStatelessReset(bytes)) {
+        return error.StatelessReset;
+    }
 
-    const adoptDecoded = struct {
-        fn f(allocator_: std.mem.Allocator, view: packet.DecodedShortView) !packet.DecodedShort {
-            const owned_payload = try allocator_.alloc(u8, view.payload.len);
-            @memcpy(owned_payload, view.payload);
-            return .{
-                .packet_number = view.packet_number,
-                .packet_number_len = view.packet_number_len,
-                .payload = owned_payload,
-                .key_phase = view.key_phase,
-            };
-        }
-    }.f;
+    // RFC 9001 §6.5: old read keys are retained for no more than three PTOs
+    // after the first packet opened with the new keys.
+    if (conn.rx_prev_keys != null and nowMonotonicNs() >= conn.rx_prev_discard_ns) discardPrevRxKeys(conn);
 
-    // PHASE 57 PART 4 FIX: DCID×KeySet enumeration
-    // RFC 9000 §17.2/§17.3: Short headers omit DCID length; RFC 9001 §6: KEY_PHASE toggles key generation
-    // CRITICAL: Cannot trust KEY_PHASE bit until we find correct DCID length!
-    // When DCID length is wrong, HP removal produces garbage, including garbage KEY_PHASE.
-    // Solution: Try ALL key sets (CURRENT, NEXT, PREV) for EACH DCID length (0-20)
-
-    // PHASE 57 Part 5: Use pre-derived NEXT keys (installed at handshake completion)
-    // This avoids per-packet derivation and maintains one-generation-ahead invariant
-    const next_keys_opt = conn.app_rx_next_keys;
-
-    const decoded = blk_dec: {
-        // Check for stateless reset before enumeration
-        if (conn.looksLikeStatelessReset(bytes)) {
-            return error.StatelessReset;
-        }
-
-        // PHASE 57 Part 7: DCID enumeration optimized per msquic reference
-        // msquic uses a fixed, cached DCID length (forks/msquic/src/core/packet.c:146)
-        // Strategy: Try cached length FIRST with all key sets, then enumerate as fallback
-
-        const max_dcid_len: u8 = 20;
-        var candidates: [max_dcid_len + 2]u8 = undefined;
-        var cand_count: usize = 0;
-
-        // PRIORITY 1: Cached DCID length (from previous successful decrypt)
-        if (conn.expected_rx_dcid_len) |cached_len| {
-            addDcidCandidate(cached_len, candidates[0..], &cand_count, max_dcid_len);
-        }
-
-        // PRIORITY 2: Observed DCID length (from packet structure)
-        addDcidCandidate(try_dcid_len, candidates[0..], &cand_count, max_dcid_len);
-
-        // PRIORITY 3: Enumerate all other lengths (fallback for edge cases)
-        var len_iter: u8 = 0;
-        while (len_iter <= max_dcid_len) : (len_iter += 1) {
-            addDcidCandidate(len_iter, candidates[0..], &cand_count, max_dcid_len);
-        }
-
-        logger.debugPrint("[APP-PATH] Enter enumerateDcidLength (short header) bytes_len={} try_dcid_len={} largest_pn={} conn_set={}\n", .{ bytes.len, try_dcid_len, largest_pn, true });
-        var cand_index: usize = 0;
-        while (cand_index < cand_count) : (cand_index += 1) {
-            const test_len = candidates[cand_index];
-
-            if (should_log_attempts) {
-                logger.debugPrint("[PHASE57-TRY] key_set=CURRENT dcid_len={} rx_phase={} largest={} forced={}\n", .{
-                    test_len,
-                    conn.rx_key_phase,
-                    largest_pn,
-                    forced_attempted,
-                });
-            }
-
-            packet.phase57SetAttemptLabel("CURRENT");
-            logger.debugPrint("[APP-DECODE] TRY CURRENT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{ test_len, largest_pn, conn.rx_key_phase, bytes.len });
-            if (packet.decodeShortProtectedInto(bytes, test_len, .{
-                .key = rx_keys.key,
-                .iv = rx_keys.iv,
-                .hp = rx_keys.hp,
-            }, largest_pn, decode_scratch[0..])) |result| {
-                if (result.payload.len > 0) {
-                    _ = frame.decodeOne(result.payload) catch {
-                        continue;
-                    };
-                }
-                const owned = adoptDecoded(allocator, result) catch continue;
-                logger.debugPrint("[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
-                actual_dcid_len = test_len;
-                break :blk_dec owned;
-            } else |_| {
-                if (next_keys_opt) |next_mat| {
-                    packet.phase57SetAttemptLabel("HYBRID_CURRENT_NEXT");
-                    if (packet.decodeShortProtectedWithHpInto(bytes, test_len, rx_keys.hp, .{
-                        .key = next_mat.key,
-                        .iv = next_mat.iv,
-                        .hp = next_mat.hp,
-                    }, largest_pn, decode_scratch[0..])) |hybrid| {
-                        logger.debugPrint("[PHASE57-HYBRID] CURRENT hp + NEXT AEAD succeeded (dcid_len={})\n", .{test_len});
-                        if (hybrid.payload.len > 0) {
-                            _ = frame.decodeOne(hybrid.payload) catch {
-                                continue;
-                            };
-                        }
-                        const owned = adoptDecoded(allocator, hybrid) catch continue;
-                        used_next = true;
-                        actual_dcid_len = test_len;
-                        break :blk_dec owned;
-                    } else |_| {}
-                }
-            }
-
-            if (next_keys_opt) |next_mat| {
-                if (should_log_attempts) {
-                    logger.debugPrint("[PHASE57-TRY] key_set=NEXT dcid_len={} rx_phase={} largest={} forced={}\n", .{
-                        test_len,
-                        conn.rx_key_phase,
-                        largest_pn,
-                        forced_attempted,
-                    });
-                }
-                packet.phase57SetAttemptLabel("NEXT");
-                logger.debugPrint("[APP-DECODE] TRY NEXT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{ test_len, largest_pn, conn.rx_key_phase, bytes.len });
-                if (packet.decodeShortProtectedInto(bytes, test_len, .{
-                    .key = next_mat.key,
-                    .iv = next_mat.iv,
-                    .hp = next_mat.hp,
-                }, largest_pn, decode_scratch[0..])) |result| {
-                    if (result.payload.len > 0) {
-                        _ = frame.decodeOne(result.payload) catch {
-                            continue;
-                        };
-                    }
-                    const owned = adoptDecoded(allocator, result) catch continue;
-                    logger.debugPrint("[PHASE57] ✅ Decrypted with NEXT keys: dcid_len={} pn={} - will promote\n", .{ test_len, result.packet_number });
-                    used_next = true;
-                    actual_dcid_len = test_len;
-                    break :blk_dec owned;
-                } else |_| {}
-            }
-
-            if (conn.rx_prev_keys) |kp| {
-                if (should_log_attempts) {
-                    logger.debugPrint("[PHASE57-TRY] key_set=PREV dcid_len={} rx_phase={} largest={} forced={}\n", .{
-                        test_len,
-                        conn.rx_key_phase,
-                        largest_pn,
-                        forced_attempted,
-                    });
-                }
-                packet.phase57SetAttemptLabel("PREV");
-                logger.debugPrint("[APP-DECODE] TRY PREV dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{ test_len, largest_pn, conn.rx_key_phase, bytes.len });
-                if (packet.decodeShortProtectedInto(bytes, test_len, .{
-                    .key = kp.key,
-                    .iv = kp.iv,
-                    .hp = kp.hp,
-                }, largest_pn, decode_scratch[0..])) |result| {
-                    if (result.payload.len > 0) {
-                        _ = frame.decodeOne(result.payload) catch {
-                            continue;
-                        };
-                    }
-                    const owned = adoptDecoded(allocator, result) catch continue;
-                    logger.debugPrint("[PHASE57] ✅ Decrypted with PREV keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
-                    used_prev = true;
-                    actual_dcid_len = test_len;
-                    break :blk_dec owned;
-                } else |_| {}
-            }
-        }
-
-        // All combinations exhausted - attempt forced key update before giving up
-        if (tryForceKeyUpdateAndDecrypt(allocator, conn, bytes, largest_pn)) |forced| {
-            logger.debugPrint("[PHASE57] ⚠️ Forced key update derived from current secret (dcid_len={}, pn={})\n", .{
-                forced.dcid_len,
-                forced.decoded.packet_number,
-            });
-            used_next = true;
-            actual_dcid_len = forced.dcid_len;
-            break :blk_dec forced.decoded;
-        }
-
-        logger.debugPrint("[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])\n", .{});
-        // PHASE 57 PART 9: Removed buggy force promotion that was flipping rx_key_phase prematurely.
-        // Force promotion was promoting keys BEFORE successfully decrypting with NEXT keys,
-        // causing rx_key_phase to match incoming key_phase and selecting wrong key generation.
-        // The server should ONLY promote after successfully decrypting with NEXT keys.
-        // See: PHASE57_PART8_SUMMARY.md - ACK decryption failures due to premature key promotion.
-        //
-        // if (!forced_attempted and conn.app_rx_next_secret != null and conn.app_rx_next_keys != null) {
-        //     logger.debugPrint("[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures\n", .{});
-        //     promoteToNextKeys(conn, conn.app_rx_next_secret.?, conn.app_rx_next_keys.?);
-        //     return decryptShortHeaderWithKeyRotationInternal(allocator, conn, bytes, try_dcid_len, true);
-        // }
+    _ = conn.rx_short_decrypt_attempts.fetchAdd(1, .monotonic);
+    const hp = rx_keys.hp;
+    const peek = packet.peekShortHeader(bytes, dcid_len, hp, largest_pn) catch {
         conn.onAeadAuthFailure();
         return error.AuthenticationFailed;
     };
 
-    // Cache the successful DCID length for future packets (DCIDs may change post-handshake)
-    conn.expected_rx_dcid_len = actual_dcid_len;
-
-    // PHASE 57 PART 2: Check if packet KEY_PHASE differs from connection RX key phase
-    // RFC 9001 §6: "Each packet contains a key phase bit that indicates which packet
-    // protection keys are used to protect the packet."
-    // If key_phase != rx_key_phase, peer has initiated key update (even if we successfully
-    // decrypted with current keys, which shouldn't happen but handle defensively)
-    if (!used_next and !used_prev and decoded.key_phase != conn.rx_key_phase) {
-        logger.debugPrint("[PHASE57-KEY-UPDATE] 🔑 KEY_PHASE mismatch detected! packet_kp={} conn_rx_kp={} pn={}\n", .{
-            decoded.key_phase,
-            conn.rx_key_phase,
-            decoded.packet_number,
-        });
-        logger.debugPrint("[PHASE57-KEY-UPDATE] Peer initiated key update - will promote to NEXT keys\n", .{});
-        used_next = true; // Trigger key promotion in caller
-    }
-
-    // PHASE 57: Enhanced logging for key phase tracking
-    if (used_next) {
-        logger.debugPrint("[PHASE57-DECRYPT] ✅ Decrypted with NEXT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
-            decoded.packet_number,
-            decoded.key_phase,
-            conn.rx_key_phase,
-        });
-    } else if (used_prev) {
-        logger.debugPrint("[PHASE57-DECRYPT] ✅ Decrypted with PREV keys: pn={} key_phase={} conn_rx_kp={}\n", .{
-            decoded.packet_number,
-            decoded.key_phase,
-            conn.rx_key_phase,
-        });
-    } else {
-        logger.debugPrint("[PHASE57-DECRYPT] ✅ Decrypted with CURRENT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
-            decoded.packet_number,
-            decoded.key_phase,
-            conn.rx_key_phase,
-        });
-    }
-
-    return ShortDecryptResult{
-        .decoded = decoded,
-        .used_next = used_next,
-        .used_prev = used_prev,
-        .dcid_len = actual_dcid_len,
+    const KeySet = enum { current, next, prev };
+    const key_set: KeySet = if (peek.key_phase == conn.rx_key_phase)
+        .current
+    else if (peek.packet_number < conn.rx_key_gen_start_pn)
+        .prev
+    else
+        .next;
+    const keys: packet.AeadKeys = switch (key_set) {
+        .current => rx_keys,
+        .next => conn.app_rx_next_keys orelse {
+            conn.onAeadAuthFailure();
+            return error.AuthenticationFailed;
+        },
+        // RFC 9001 §6.5: once the previous keys are discarded (three PTOs
+        // after the key update), packets protected with them are discarded
+        // too.
+        .prev => conn.rx_prev_keys orelse {
+            conn.onAeadAuthFailure();
+            return error.AuthenticationFailed;
+        },
     };
-}
 
-fn tryForceKeyUpdateAndDecrypt(
-    allocator: std.mem.Allocator,
-    conn: *conn_mod.Connection,
-    bytes: []const u8,
-    largest_pn: u64,
-) ?ShortDecryptResult {
-    const current_secret = conn.app_rx_secret orelse return null;
-    _ = conn.app_rx_keys orelse return null;
     var decode_scratch: [4096]u8 = undefined;
+    packet.phase57SetAttemptLabel(@tagName(key_set));
+    const view = packet.decodeShortProtectedWithHpInto(bytes, dcid_len, hp, keys, largest_pn, decode_scratch[0..]) catch {
+        conn.onAeadAuthFailure();
+        return error.AuthenticationFailed;
+    };
+    if (view.payload.len > 0) {
+        _ = frame.decodeOne(view.payload) catch return error.InvalidFrame;
+    }
+    const owned_payload = try allocator.alloc(u8, view.payload.len);
+    @memcpy(owned_payload, view.payload);
 
-    const next_keys_present = conn.app_rx_next_keys != null;
-    const next_secret_present = conn.app_rx_next_secret != null;
-    logger.debugPrint("[PHASE57] fallback invoked: rx_key_phase={} next_keys_present={} next_secret_present={} largest_pn={}\n", .{
+    // Cache the DCID length for diagnostics (DCIDs may change post-handshake)
+    conn.expected_rx_dcid_len = dcid_len;
+
+    logger.debugPrint("[PHASE57-DECRYPT] ✅ Decrypted with {s} keys: pn={} key_phase={} conn_rx_kp={}\n", .{
+        @tagName(key_set),
+        view.packet_number,
+        view.key_phase,
         conn.rx_key_phase,
-        next_keys_present,
-        next_secret_present,
-        largest_pn,
     });
 
-    const hash = hashForSecret(&current_secret) catch return null;
-    const forced_secret = key_update.deriveNextTrafficSecret(hash, &current_secret) catch return null;
-    const forced_mat = key_schedule.deriveKeyIvHpHash(hash, &forced_secret, conn.version_v2);
-
-    logger.debugPrint("[PHASE57] Forced key derivation prepared (material redacted)\n", .{});
-
-    var test_len: u8 = 0;
-    while (test_len <= 20) : (test_len += 1) {
-        packet.phase57SetAttemptLabel("FORCED");
-        logger.debugPrint("[APP-DECODE] TRY FORCED dcid_len={} largest_pn={} bytes={}\n", .{ test_len, largest_pn, bytes.len });
-        if (packet.decodeShortProtectedInto(bytes, test_len, .{
-            .key = forced_mat.key,
-            .iv = forced_mat.iv,
-            .hp = forced_mat.hp,
-        }, largest_pn, decode_scratch[0..])) |result| {
-            if (result.payload.len > 0) {
-                _ = frame.decodeOne(result.payload) catch {
-                    continue;
-                };
-            }
-            const owned_payload = allocator.alloc(u8, result.payload.len) catch return null;
-            @memcpy(owned_payload, result.payload);
-
-            conn.app_rx_next_secret = forced_secret;
-            conn.app_rx_next_keys = .{
-                .key = forced_mat.key,
-                .iv = forced_mat.iv,
-                .hp = forced_mat.hp,
-            };
-
-            return ShortDecryptResult{
-                .decoded = .{
-                    .packet_number = result.packet_number,
-                    .packet_number_len = result.packet_number_len,
-                    .payload = owned_payload,
-                    .key_phase = result.key_phase,
-                },
-                .used_next = true,
-                .used_prev = false,
-                .dcid_len = test_len,
-            };
-        } else |_| {}
-    }
-
-    return null;
+    return ShortDecryptResult{
+        .decoded = .{
+            .packet_number = view.packet_number,
+            .packet_number_len = view.packet_number_len,
+            .payload = owned_payload,
+            .key_phase = view.key_phase,
+        },
+        .used_next = key_set == .next,
+        .used_prev = key_set == .prev,
+        .dcid_len = dcid_len,
+    };
 }
 
 /// Promote connection to NEXT application keys after successful decryption.
@@ -965,16 +706,19 @@ fn tryForceKeyUpdateAndDecrypt(
 /// 2. Install NEXT keys as current app_rx_keys
 /// 3. Update app_rx_secret to NEXT secret
 /// 4. Toggle rx_key_phase bit
-/// 5. Set rx_prev_allow window to 16 packets
+/// 5. Retain the previous keys for three PTOs (RFC 9001 §6.5)
 ///
 /// Parameters:
 /// - conn: Connection to promote keys on
 /// - next_secret: NEXT RX traffic secret
 /// - next_keys: NEXT RX AEAD keys (key, iv, hp)
+/// - first_pn: packet number of the packet that the NEXT keys opened, the
+///   first of the new generation (RFC 9001 §6.3)
 pub fn promoteToNextKeys(
     conn: *conn_mod.Connection,
     next_secret: key_schedule.Secret,
     next_keys: packet.AeadKeys,
+    first_pn: u64,
 ) void {
     // PHASE 57: Log key promotion
     const old_key_phase = conn.rx_key_phase;
@@ -1001,7 +745,11 @@ pub fn promoteToNextKeys(
         sz(u8, &old_prev.hp);
     }
     conn.rx_prev_keys = conn.app_rx_keys;
-    conn.rx_prev_allow = 16; // bounded window for reordering
+    // RFC 9001 §6.5: retain the old read keys "for no more than three times
+    // the PTO after having received a packet protected using the new keys",
+    // so that packets reordered across the update can still be opened.
+    const pto_ns = conn.rec.rtt.computePtoNsWithBackoff(0, conn.rec.timer_granularity_ns);
+    conn.rx_prev_discard_ns = nowMonotonicNs() +| (pto_ns *| 3);
 
     // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
     // Evidence: quic-go's rollKeys() only updates rcvAEAD/sendAEAD, NOT headerDecrypter/headerEncrypter
@@ -1013,6 +761,7 @@ pub fn promoteToNextKeys(
     conn.maybeEmitRxKeyUpdateLog(&next_secret);
     conn.rx_key_phase = !conn.rx_key_phase;
     conn.rx_key_gen += 1;
+    conn.rx_key_gen_start_pn = first_pn;
 
     logger.debugPrint("[PHASE57-HP-PRESERVE] HP key preserved during promotion (not rotated per RFC 9001 §6)\n", .{});
 
@@ -1023,41 +772,19 @@ pub fn promoteToNextKeys(
     logger.debugPrint("[PHASE57-KEY-PROMOTE] ✅ Key promotion complete - ready for next packet\n", .{});
 }
 
-/// Decrement previous key allowance after using rx_prev_keys.
-/// Extracted from endpoint.zig lines 1326-1346 (Phase 4b.5 Session 3).
-///
-/// RFC 9001 §6.5: "An endpoint MAY retain old keys for a short period to allow
-/// decryption of packets that are reordered in the network."
-///
-/// When a packet is decrypted with previous keys:
-/// 1. Decrement rx_prev_allow counter
-/// 2. If counter reaches zero, zeroize and drop rx_prev_keys
-/// 3. This prevents unbounded key retention
-///
-/// Parameters:
-/// - conn: Connection with rx_prev_keys and rx_prev_allow
-pub fn decrementPrevKeyAllowance(conn: *conn_mod.Connection) void {
-    if (conn.rx_prev_allow > 0) {
-        conn.rx_prev_allow -= 1;
-        if (conn.rx_prev_allow == 0) {
-            if (conn.rx_prev_keys) |*to_zero| {
-                // fips-exempt: non-security — key-material zeroization, not a FIPS algorithm.
-                const sz = std.crypto.secureZero;
-                sz(u8, &to_zero.key);
-                sz(u8, &to_zero.iv);
-                sz(u8, &to_zero.hp);
-            }
-            conn.rx_prev_keys = null;
-        }
-    } else {
-        // Safety: if allowance already zero, drop prev immediately
-        if (conn.rx_prev_keys) |*to_zero2| {
-            // fips-exempt: non-security — key-material zeroization, not a FIPS algorithm.
-            const sz = std.crypto.secureZero;
-            sz(u8, &to_zero2.key);
-            sz(u8, &to_zero2.iv);
-            sz(u8, &to_zero2.hp);
-        }
-        conn.rx_prev_keys = null;
+fn nowMonotonicNs() u64 {
+    const t = compat.monotonicNanoTimestamp();
+    return if (t > 0) @intCast(t) else 0;
+}
+
+/// Zeroize and drop the previous receive keys (RFC 9001 §6.5).
+pub fn discardPrevRxKeys(conn: *conn_mod.Connection) void {
+    if (conn.rx_prev_keys) |*to_zero| {
+        // fips-exempt: non-security — key-material zeroization, not a FIPS algorithm.
+        const sz = std.crypto.secureZero;
+        sz(u8, &to_zero.key);
+        sz(u8, &to_zero.iv);
+        sz(u8, &to_zero.hp);
     }
+    conn.rx_prev_keys = null;
 }

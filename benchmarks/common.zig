@@ -59,6 +59,11 @@ pub const ResultRow = struct {
     rtt_smoothed_ns: ?u64 = null,
     external_impl: ?[]const u8 = null,
     mutex_hold_wall_ns: ?u64 = null,
+    /// Set when the scenario could not measure (SONNY-4381), to the reason
+    /// (e.g. "CredentialsMissing"); every number in the row is then zero and
+    /// meaningless. bench-compare fails the gate on such a row, on either
+    /// side, instead of comparing it.
+    not_measured: ?[]const u8 = null,
 };
 
 pub const HostInfo = struct {
@@ -108,7 +113,24 @@ pub const RunOutput = struct {
     /// failed to start); downstream compare/gate treats skip rows as
     /// non-contributing rather than regressions.
     external_impl: ?[]const u8 = null,
+    /// Set by a scenario that could not measure, to a static reason string
+    /// (SONNY-4381): missing or invalid server credentials, a server that did
+    /// not start. runRepeated then returns a not-measured row; the numbers
+    /// of this output are ignored. Never a placeholder that could pass the
+    /// perf gate.
+    not_measured: ?[]const u8 = null,
 };
+
+/// A RunOutput that reports that the scenario could not measure (SONNY-4381).
+pub fn notMeasured(allocator: std.mem.Allocator, reason: []const u8) !RunOutput {
+    return .{
+        .iterations = 0,
+        .wall_time_ns = 0,
+        .cpu_time_ns = 0,
+        .latencies_ns = try allocator.alloc(u64, 0),
+        .not_measured = reason,
+    };
+}
 
 pub const RunFn = *const fn (allocator: std.mem.Allocator, spec: ScenarioSpec) anyerror!RunOutput;
 
@@ -156,6 +178,9 @@ pub fn runRepeated(
     for (&outputs) |*o| {
         o.* = try runFn(workload_allocator, spec);
         completed += 1;
+        // SONNY-4381: one run that could not measure makes the row
+        // not-measured; nothing is sampled or summarised from it.
+        if (o.not_measured) |reason| return notMeasuredRow(allocator, io, spec, reason);
     }
 
     const warm_samples = outputs[WARMUP..];
@@ -228,6 +253,34 @@ pub fn runRepeated(
         .rtt_smoothed_ns = if (rep.rtt_smoothed_ns == 0) null else rep.rtt_smoothed_ns,
         .mutex_hold_wall_ns = if (rep.mutex_hold_wall_ns == 0) null else rep.mutex_hold_wall_ns,
         .external_impl = if (rep.external_impl) |label| try allocator.dupe(u8, label) else null,
+    };
+}
+
+/// The row of a scenario that could not measure: identity, host and the
+/// reason; every measurement zero (SONNY-4381).
+fn notMeasuredRow(allocator: std.mem.Allocator, io: std.Io, spec: ScenarioSpec, reason: []const u8) !ResultRow {
+    return ResultRow{
+        .git_sha = try gitSha(allocator, io),
+        .run_timestamp_unix_s = @as(i64, @intCast(@divTrunc(nanoTimestamp(), std.time.ns_per_s))),
+        .zig_version = builtin.zig_version_string,
+        .os = @tagName(builtin.os.tag),
+        .arch = @tagName(builtin.cpu.arch),
+        .cpu = try allocator.dupe(u8, @tagName(builtin.cpu.arch)),
+        .hostname = try hostnameAlloc(allocator, io),
+        .kernel = try kernelAlloc(allocator, io),
+        .scenario_name = spec.name,
+        .variant = spec.variant,
+        .iterations = 0,
+        .throughput_ops_per_sec = 0,
+        .latency_p50_ns = 0,
+        .latency_p95_ns = 0,
+        .latency_p99_ns = 0,
+        .cpu_time_ns = 0,
+        .wall_time_ns = 0,
+        .connection_count = spec.connection_count,
+        .streams_count = spec.streams_count,
+        .payload_bytes = spec.payload_bytes,
+        .not_measured = try allocator.dupe(u8, reason),
     };
 }
 

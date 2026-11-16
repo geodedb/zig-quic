@@ -100,6 +100,7 @@ pub fn bind(comptime Connection: type) type {
 
         /// Drop records an ACK covers and resend the frames of lost packets.
         pub fn onAckControlFrames(self: *Connection, intervals: anytype, largest_acked: u64, recovery_reported_loss: bool) void {
+            onAckHandshakeDone(self, intervals, largest_acked, recovery_reported_loss);
             if (self.ctrl_retx.count() == 0) return;
             const alloc = self.allocator.*;
             var lost: std.ArrayList(Entry) = .empty;
@@ -128,6 +129,28 @@ pub fn bind(comptime Connection: type) type {
                 }
             }
             if (lost.items.len > 0) resendControl(self, lost.items);
+        }
+
+        /// RFC 9000 §13.3: "The HANDSHAKE_DONE frame MUST be retransmitted
+        /// until it is acknowledged." Lost by the rule above, it is sent
+        /// again in a new packet; a client that never receives it never
+        /// confirms the handshake (RFC 9001 §4.1.2), and may then never
+        /// initiate a key update (§6.1).
+        fn onAckHandshakeDone(self: *Connection, intervals: anytype, largest_acked: u64, recovery_reported_loss: bool) void {
+            const pn = self.handshake_done_pn orelse return;
+            if (acked(intervals, pn)) {
+                self.handshake_done_pn = null;
+                return;
+            }
+            if (pn >= largest_acked or (largest_acked - pn < 3 and !recovery_reported_loss)) return;
+            var buf: [8]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            _ = (frame.Frame{ .handshake_done = {} }).write(&w) catch return;
+            const resend_pn = self.pn_app_tx;
+            self.sendControlFrames(buf[0..w.end]);
+            // Not sent (no keys, send failure): still lost, retried on the
+            // next ACK.
+            if (self.pn_app_tx != resend_pn) self.handshake_done_pn = resend_pn;
         }
 
         /// Send the frames of lost packets again: flow-control limits with

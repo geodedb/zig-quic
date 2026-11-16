@@ -1,0 +1,33 @@
+{
+  "generated_at_unix_s": 0,
+  "zig_version": "0.16.0",
+  "quic_git_sha": "fixture",
+  "host": {
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu": "x86_64",
+    "hostname": "fixture",
+    "kernel": "fixture"
+  },
+  "rows": [
+    {
+      "git_sha": "fixture",
+      "run_timestamp_unix_s": 0,
+      "zig_version": "0.16.0",
+      "os": "linux",
+      "arch": "x86_64",
+      "cpu": "x86_64",
+      "hostname": "fixture",
+      "kernel": "fixture",
+      "scenario_name": "integration/handshake_e2e",
+      "variant": "1conn",
+      "iterations": 1,
+      "throughput_ops_per_sec": 1000.0,
+      "latency_p50_ns": 0,
+      "latency_p95_ns": 0,
+      "latency_p99_ns": 0,
+      "cpu_time_ns": 0,
+      "wall_time_ns": 1000000
+    }
+  ]
+}

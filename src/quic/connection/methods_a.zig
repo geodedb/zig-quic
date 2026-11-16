@@ -14,10 +14,11 @@ pub fn bind(comptime Connection: type) type {
         // Maximum number of distinct out-of-order STREAM segments buffered per
         // stream before further out-of-order data is rejected with
         // FLOW_CONTROL_ERROR (RFC 9000 §4.2 receive-buffer bounding, QC-01).
-        // Comfortably exceeds the packet count of a full 16 MiB receive window
-        // of MTU-sized packets (~14k), so it never trips on legitimate
-        // reordering, while bounding per-segment struct overhead under a flood
-        // of tiny gapped segments.
+        // Contiguous data is coalesced into one segment (StreamRx.insert,
+        // SONNY-6649), so this bounds the gaps in the received data, not the
+        // STREAM frames: a peer has to leave 16384 holes to reach it, while
+        // per-segment overhead under a flood of tiny gapped segments stays
+        // bounded.
         const max_ooo_segments: usize = 16384;
 
         // Maximum number of received DATAGRAM frames buffered for the application
@@ -224,11 +225,12 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.app_tx_keys orelse return error.NoApplicationKeys;
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
+            const sent_pn = self.pn_app_tx;
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 frames_list.items,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -236,6 +238,7 @@ pub fn bind(comptime Connection: type) type {
             const pkt = packet_storage[0..pkt_len];
             _ = try self.send(pkt);
             self.onShortHeaderPacketSent(pkt.len, true);
+            self.handshake_done_pn = sent_pn;
 
             self.initial_keys_dropped = true;
             self.initial_rx_keys = null;
@@ -1153,8 +1156,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 frames.items,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -1218,8 +1221,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 frames_bytes,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,

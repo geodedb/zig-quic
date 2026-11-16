@@ -8,6 +8,7 @@ const ks = @import("quic_tls");
 const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const crypto_utils = @import("crypto_utils.zig");
+const stream_mod = @import("stream.zig");
 const key_update = @import("quic_key_update");
 
 /// Compile-time toggle for verbose method-level tracing in connection helpers.
@@ -301,7 +302,13 @@ pub fn bind(comptime Connection: type) type {
         /// Encode and send `tracked` as a STREAM frame in a new 1-RTT packet
         /// numbered `self.pn_app_tx`. Returns the packet length if the whole
         /// datagram was sent; on any failure nothing was sent.
-        fn sendStreamRetransmission(self: *Connection, tx: anytype, tracked: RetxEntry(Connection)) ?usize {
+        ///
+        /// The send keys are read here, with the key phase: the previous
+        /// retransmission's onShortHeaderPacketSent can start a key update,
+        /// and a packet protected with the old keys but carrying the new key
+        /// phase cannot be decrypted (RFC 9001 §6; SONNY-6649).
+        fn sendStreamRetransmission(self: *Connection, tracked: RetxEntry(Connection)) ?usize {
+            const tx = self.app_tx_keys orelse return null;
             var frame_storage: [2048]u8 = undefined;
             var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
             _ = (frame.Frame{
@@ -318,8 +325,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 frame_bytes,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -351,7 +358,6 @@ pub fn bind(comptime Connection: type) type {
             if (!self.app_stream_retx_init) return;
             if (!self.hasConfirmedAppTxKeys()) return;
             const largest_acked = largest_acked_opt orelse return;
-            const tx = self.app_tx_keys.?;
 
             var retransmitted: usize = 0;
             var i: usize = 0;
@@ -379,7 +385,7 @@ pub fn bind(comptime Connection: type) type {
                 // A failed send (WouldBlock, pool exhausted) leaves the entry
                 // tracked for the next ACK or PTO. Stop rather than re-encode
                 // every remaining lost packet against a full socket.
-                const pkt_len = sendStreamRetransmission(self, tx, tracked_ptr.*) orelse break;
+                const pkt_len = sendStreamRetransmission(self, tracked_ptr.*) orelse break;
                 self.retx_diag.noteRetransmit(tracked_ptr.stream_id, tracked_ptr.offset, tracked_ptr.data.len, tracked_ptr.fin);
                 self.retx_diag.noteSent(self.allocator.*, next_pn, tracked_ptr.stream_id, tracked_ptr.offset, tracked_ptr.data.len, tracked_ptr.fin);
                 var tracked = self.app_stream_retx.fetchRemove(lost_pn).?.value;
@@ -416,6 +422,10 @@ pub fn bind(comptime Connection: type) type {
         }
 
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
+            // Every 1-RTT packet is sent under Connection.mu (SONNY-4379).
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
             // #163: stack buffer replaces per-call ArrayList assembly.
@@ -428,8 +438,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -464,7 +474,17 @@ pub fn bind(comptime Connection: type) type {
 
         /// Open a bidi stream; only stream id 0 is supported in this minimal slice.
         /// Open a new local stream (bidi or uni) returning stream id (flow-control permitting).
+        /// Open a stream. Takes Connection.mu: when the stream limit is
+        /// reached it sends STREAMS_BLOCKED, a 1-RTT packet (SONNY-4379).
         pub fn openStream(self: *Connection, bidi: bool) !u64 {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
+            return self.openStreamUnlocked(bidi);
+        }
+
+        /// openStream for callers that hold Connection.mu.
+        pub fn openStreamUnlocked(self: *Connection, bidi: bool) !u64 {
             if (bidi) {
                 if (self.opened_bidi >= self.peer_max_streams_bidi) {
                     // #163: stack buffer for single STREAMS_BLOCKED_BIDI frame (< 16 bytes).
@@ -576,7 +596,7 @@ pub fn bind(comptime Connection: type) type {
                         }
                     } else {
                         // Client or server-initiated stream - normal openStream path
-                        _ = self.openStream(true) catch |e| switch (e) {
+                        _ = self.openStreamUnlocked(true) catch |e| switch (e) {
                             error.OutOfStreams => return e,
                             else => return e,
                         };
@@ -748,8 +768,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
                 dcid,
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 frame_bytes,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -890,8 +910,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 frame_bytes,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -962,8 +982,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -1021,8 +1041,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -1084,7 +1104,7 @@ pub fn bind(comptime Connection: type) type {
             while (i < s.bufs.items.len) {
                 const seg = s.bufs.items[i];
                 if (seg.off >= final_size) {
-                    self.allocator.free(seg.data);
+                    stream_mod.freeSegment(self.allocator.*, seg);
                     s.buffered_bytes -|= seg.data.len;
                     // Keep the segments sorted by offset (tryDrain relies on it).
                     _ = s.bufs.orderedRemove(i);
@@ -1099,14 +1119,14 @@ pub fn bind(comptime Connection: type) type {
                 if (seg_end > final_size) {
                     const keep_len: usize = @intCast(final_size - seg.off);
                     const kept = self.allocator.dupe(u8, seg.data[0..keep_len]) catch {
-                        self.allocator.free(seg.data);
+                        stream_mod.freeSegment(self.allocator.*, seg);
                         s.buffered_bytes -|= seg.data.len;
                         _ = s.bufs.orderedRemove(i);
                         continue;
                     };
-                    self.allocator.free(seg.data);
+                    stream_mod.freeSegment(self.allocator.*, seg);
                     s.buffered_bytes -|= seg.data.len - keep_len;
-                    s.bufs.items[i].data = kept;
+                    s.bufs.items[i] = .{ .off = seg.off, .data = kept };
                 }
                 i += 1;
             }
@@ -1721,8 +1741,8 @@ pub fn bind(comptime Connection: type) type {
                             const pkt_len = packet.encodeShortProtectedInto(
                                 packet_storage,
                                 self.shortHeaderDcid(),
-                                @as(u32, @truncate(next_pn)),
-                                2,
+                                next_pn,
+                                self.appPacketNumberLen(next_pn),
                                 frame_bytes,
                                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                                 self.tx_key_phase,
@@ -1768,8 +1788,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -1809,8 +1829,8 @@ pub fn bind(comptime Connection: type) type {
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
                 self.shortHeaderDcid(),
-                @as(u32, @truncate(self.pn_app_tx)),
-                2,
+                self.pn_app_tx,
+                self.appPacketNumberLen(self.pn_app_tx),
                 fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
@@ -1889,12 +1909,13 @@ pub fn bind(comptime Connection: type) type {
             self.tx_key_phase = false;
             self.tx_key_gen = 0;
             self.rx_key_gen = 0;
+            self.rx_key_gen_start_pn = 0;
             self.tx_sent_packets_since_key = 0;
             self.tx_sent_bytes_since_key = 0;
             self.tx_update_in_progress = false;
             self.tx_prev_keys = null;
             self.rx_prev_keys = null;
-            self.rx_prev_allow = 0;
+            self.rx_prev_discard_ns = 0;
             // After 1-RTT keys are ready, proactively advertise initial flow-control if allowed
             self.advertiseInitialFlowControl();
             // Drop Initial keys immediately; defer dropping Handshake keys until any pending Finished CRYPTO is sent.
@@ -1950,7 +1971,9 @@ pub fn bind(comptime Connection: type) type {
                 _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
                 _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
                 // NOTE: Session tickets removed - Context API doesn't support queueNewSessionTicket yet
+                const sent_pn = self.pn_app_tx;
                 self.sendControlFrames(fbs.getWritten());
+                if (self.pn_app_tx != sent_pn) self.handshake_done_pn = sent_pn;
                 self.handshake_done_sent = true;
             }
         }
@@ -2005,6 +2028,16 @@ pub fn bind(comptime Connection: type) type {
         pub fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
             if (self.app_tx_keys == null or self.app_tx_secret == null) return;
             if (self.disable_auto_key_update) return;
+            // RFC 9001 §6.1: "An endpoint MUST NOT initiate a key update
+            // prior to having confirmed the handshake (Section 4.1.2)." A
+            // server confirms it when the handshake completes, a client when
+            // it receives HANDSHAKE_DONE (§4.1.2). hasConfirmedAppTxKeys()
+            // is handshake completion, which a client reaches earlier.
+            const confirmed = switch (self.role) {
+                .Server => self.peer_finished_verified,
+                .Client => self.handshake_done_seen,
+            };
+            if (!confirmed) return;
             // Do not trigger another while an update is in progress
             if (self.tx_update_in_progress) return;
             // Simple thresholds (tunable): after 64 packets or 64 KiB

@@ -55,9 +55,10 @@ var cert_cache_priv_p256: ?[]const u8 = null;
 pub const ServerCreds = struct { cert: []const u8, key: []const u8 };
 
 /// Load cert.pem + key.pem, parse to DER / P-256 raw scalar, cache in
-/// process-global globals. Subsequent calls short-circuit. Returns null
-/// on any IO or parse failure (caller falls back to placeholder output).
-pub fn loadServerCreds(allocator: std.mem.Allocator) ?ServerCreds {
+/// process-global globals. Subsequent calls short-circuit. Fails with
+/// CredsError when the files are missing or invalid; the scenario then
+/// reports itself not measured (SONNY-4381).
+pub fn loadServerCreds(allocator: std.mem.Allocator) CredsError!ServerCreds {
     cert_cache_mu.lockUncancelable(benchIo());
     defer cert_cache_mu.unlock(benchIo());
 
@@ -67,44 +68,44 @@ pub fn loadServerCreds(allocator: std.mem.Allocator) ?ServerCreds {
         }
     }
 
-    const io = benchIo();
+    const creds = try loadServerCredsFrom(allocator, std.Io.Dir.cwd());
+    cert_cache_cert_der = creds.cert;
+    cert_cache_priv_p256 = creds.key;
+    return creds;
+}
 
-    // Read + parse cert.pem
-    const cert_file = std.Io.Dir.cwd().openFile(io, CERT_PATH, .{}) catch return null;
-    defer cert_file.close(io);
-    const cert_size = (cert_file.stat(io) catch return null).size;
-    const cert_pem = allocator.alloc(u8, cert_size) catch return null;
+/// Why server credentials could not be loaded (SONNY-4381). A scenario
+/// reports either as not measured (common.notMeasured), never as a
+/// placeholder measurement.
+pub const CredsError = error{
+    /// CERT_PATH or KEY_PATH does not exist or cannot be read.
+    CredentialsMissing,
+    /// A file exists but does not parse as a certificate / P-256 key.
+    CredentialsInvalid,
+    OutOfMemory,
+};
+
+/// Read and parse CERT_PATH and KEY_PATH relative to `dir`, uncached.
+pub fn loadServerCredsFrom(allocator: std.mem.Allocator, dir: std.Io.Dir) CredsError!ServerCreds {
+    const cert_pem = try readFile(allocator, dir, CERT_PATH);
     defer allocator.free(cert_pem);
-    _ = cert_file.readPositionalAll(io, cert_pem, 0) catch return null;
-    const cert_der = api.pem.parseCertificate(allocator, cert_pem) catch return null;
-
-    // Read + parse key.pem
-    const key_file = std.Io.Dir.cwd().openFile(io, KEY_PATH, .{}) catch {
-        allocator.free(cert_der);
-        return null;
-    };
-    defer key_file.close(io);
-    const key_size = (key_file.stat(io) catch {
-        allocator.free(cert_der);
-        return null;
-    }).size;
-    const key_pem = allocator.alloc(u8, key_size) catch {
-        allocator.free(cert_der);
-        return null;
-    };
+    const key_pem = try readFile(allocator, dir, KEY_PATH);
     defer allocator.free(key_pem);
-    _ = key_file.readPositionalAll(io, key_pem, 0) catch {
-        allocator.free(cert_der);
-        return null;
-    };
-    const priv = api.pem.parsePrivateKey(allocator, key_pem) catch {
-        allocator.free(cert_der);
-        return null;
-    };
-
-    cert_cache_cert_der = cert_der;
-    cert_cache_priv_p256 = priv;
+    const cert_der = api.pem.parseCertificate(allocator, cert_pem) catch return error.CredentialsInvalid;
+    errdefer allocator.free(cert_der);
+    const priv = api.pem.parsePrivateKey(allocator, key_pem) catch return error.CredentialsInvalid;
     return .{ .cert = cert_der, .key = priv };
+}
+
+fn readFile(allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8) CredsError![]u8 {
+    const io = benchIo();
+    const file = dir.openFile(io, path, .{}) catch return error.CredentialsMissing;
+    defer file.close(io);
+    const size = (file.stat(io) catch return error.CredentialsMissing).size;
+    const buf = try allocator.alloc(u8, size);
+    errdefer allocator.free(buf);
+    _ = file.readPositionalAll(io, buf, 0) catch return error.CredentialsMissing;
+    return buf;
 }
 
 /// Atomic port allocator. Starts at 19400 -- handshake_e2e.zig uses

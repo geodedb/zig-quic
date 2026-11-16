@@ -697,7 +697,9 @@ pub const Connection = struct {
     tx_key_phase: bool = false,
     // RX dual-phase support during transition
     rx_prev_keys: ?packet.AeadKeys = null,
-    rx_prev_allow: u32 = 0,
+    /// Monotonic time (ns) after which rx_prev_keys are discarded: three PTOs
+    /// after the first packet opened with the current keys (RFC 9001 §6.5).
+    rx_prev_discard_ns: u64 = 0,
     // TX update in-progress bookkeeping
     tx_prev_keys: ?packet.AeadKeys = null,
     tx_update_in_progress: bool = false,
@@ -709,6 +711,11 @@ pub const Connection = struct {
     // keys when they are already ahead.
     tx_key_gen: u64 = 0,
     rx_key_gen: u64 = 0,
+    /// Packet number of the first packet decrypted with the current receive
+    /// keys (0 before any key update). A packet with the other key phase
+    /// and a smaller packet number was protected with the previous keys,
+    /// otherwise with the next keys (RFC 9001 §6.3, §6.5).
+    rx_key_gen_start_pn: u64 = 0,
     tx_sent_packets_since_key: u64 = 0,
     // Disable automatic key update (replaces QUIC_DISABLE_AUTO_KEY_UPDATE env var)
     disable_auto_key_update: bool = false,
@@ -724,6 +731,10 @@ pub const Connection = struct {
     // Lifecycle flags
     handshake_done_sent: bool = false,
     handshake_done_seen: bool = false,
+    /// Server: packet number of the latest 1-RTT packet that carried
+    /// HANDSHAKE_DONE, until an ACK covers it. RFC 9000 §13.3: "The
+    /// HANDSHAKE_DONE frame MUST be retransmitted until it is acknowledged."
+    handshake_done_pn: ?u64 = null,
     /// Last non-retryable handshake/path setup error observed by connection processing.
     last_handshake_error: ?anyerror = null,
     /// Deferred Handshake packet flush. Clients retain Finished here after a
@@ -1049,6 +1060,11 @@ pub const Connection = struct {
     aead_tx_encrypted_count: u64 = 0,
     /// Total number of packets that failed authentication on RX (integrity limit counter per §6.6).
     aead_rx_invalid_count: u64 = 0,
+    /// 1-RTT packet protection removals attempted (header protection removal
+    /// plus AEAD open, one per key set tried), successful or not. A received
+    /// packet needs exactly one (RFC 9001 §5.4, §6.3); more per packet is
+    /// work an off-path sender can cause with undecryptable packets.
+    rx_short_decrypt_attempts: std.atomic.Value(u64) = .init(0),
     /// Applied limits (derived from cipher suite and optionally overridden by config).
     aead_confidentiality_limit: u64 = (1 << 23), // AES-GCM default
     aead_integrity_limit: u64 = (1 << 52),
@@ -1429,12 +1445,13 @@ pub const Connection = struct {
         self.rx_key_phase = false;
         self.tx_key_phase = false;
         self.rx_prev_keys = null;
-        self.rx_prev_allow = 0;
+        self.rx_prev_discard_ns = 0;
         self.tx_prev_keys = null;
         self.tx_update_in_progress = false;
         self.tx_update_start_pn = 0;
         self.tx_key_gen = 0;
         self.rx_key_gen = 0;
+        self.rx_key_gen_start_pn = 0;
         self.tx_sent_packets_since_key = 0;
         self.last_stream_data_blocked_limit = 0;
         self.last_data_blocked_limit = 0;
@@ -1451,6 +1468,7 @@ pub const Connection = struct {
         self.ctrl_retx = .empty;
         self.tx_sent_bytes_since_key = 0;
         self.handshake_done_sent = false;
+        self.handshake_done_pn = null;
         self.handshake_done_seen = false;
         self.pending_hs_send = false;
         self.last_handshake_error = null;
@@ -1531,6 +1549,7 @@ pub const Connection = struct {
         // Initialize AEAD limits
         self.aead_tx_encrypted_count = 0;
         self.aead_rx_invalid_count = 0;
+        self.rx_short_decrypt_attempts = .init(0);
         self.aead_confidentiality_limit = (1 << 23);
         self.aead_integrity_limit = (1 << 52);
         // Initialize transport params
@@ -2160,6 +2179,27 @@ pub const Connection = struct {
         return result;
     }
 
+    /// Length in bytes of the packet number field of 1-RTT packet `pn`.
+    /// RFC 9000 §17.1: "the sender MUST use a packet number size able to
+    /// represent more than twice as large a range as the difference between
+    /// the largest acknowledged packet number and the packet number being
+    /// sent." Appendix A.2: the smallest length b with
+    /// num_unacked <= 2^(8b-1). At least 2 bytes, as before, so that the
+    /// common case does not change; the peer decodes any length (A.3).
+    pub fn appPacketNumberLen(self: *const Connection, pn: u64) u3 {
+        // largest_acked 0 also means none acknowledged yet (A.2 then uses
+        // pn + 1); counting one more unacknowledged packet errs long.
+        const num_unacked: u64 = if (self.largest_acked == 0)
+            pn +| 1
+        else if (pn > self.largest_acked)
+            pn - self.largest_acked
+        else
+            1;
+        if (num_unacked <= (1 << 15)) return 2;
+        if (num_unacked <= (1 << 23)) return 3;
+        return 4;
+    }
+
     /// Check if the peer address is localhost (127.0.0.1 or ::1)
     pub fn isLocalhost(self: *const Connection) bool {
         // Check IPv4 localhost (127.0.0.1)
@@ -2309,6 +2349,7 @@ pub const Connection = struct {
 
     pub const sendDatagram = methods_b.sendDatagram;
     pub const openStream = methods_b.openStream;
+    pub const openStreamUnlocked = methods_b.openStreamUnlocked;
     pub const writeStream = methods_b.writeStream;
     pub const writeStreamUnlocked = methods_b.writeStreamUnlocked;
     pub const readStream = methods_b.readStream;

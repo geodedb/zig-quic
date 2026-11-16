@@ -16,7 +16,6 @@ const RxContext = shared.RxContext;
 const SendFn = shared.SendFn;
 const decryptShortHeaderWithKeyRotation = incoming_b.decryptShortHeaderWithKeyRotation;
 const promoteToNextKeys = incoming_b.promoteToNextKeys;
-const decrementPrevKeyAllowance = incoming_b.decrementPrevKeyAllowance;
 const processFrames = incoming_b2.processFrames;
 const generateAndSendAck = incoming_b2.generateAndSendAck;
 const FrameProcessResult = incoming_b2.FrameProcessResult;
@@ -255,8 +254,7 @@ pub fn processShortHeaderResolved(
         logger.debugPrint("\nUsing RX keys (redacted)\n", .{});
     }
 
-    // Use extracted decryption function with key rotation
-    // Tries CURRENT → NEXT → PREV keys automatically
+    // One key set per packet, selected by its key phase (RFC 9001 §6.3)
     // CANARY: REQ=REQ-QUIC-HC-116; FEATURE="High-Concurrency Requests"; ASPECT=ReleaseHotPathDiagnostics; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
     // Keep packet-level diagnostics off the ReleaseSafe receive path. The
     // logger call itself compiles away, but standalone scans and counters must
@@ -368,7 +366,7 @@ pub fn processShortHeaderResolved(
         if (conn.app_rx_next_secret) |next_secret| {
             if (conn.app_rx_next_keys) |next_keys| {
                 logger.debugPrint("[PHASE57-STEP5] Calling promoteToNextKeys()...\n", .{});
-                promoteToNextKeys(conn, next_secret, next_keys);
+                promoteToNextKeys(conn, next_secret, next_keys, dec_res.packet_number);
                 conn.syncTxKeysAfterRxUpdate();
 
                 if (ctx.test_capture_enabled) {
@@ -426,20 +424,8 @@ pub fn processShortHeaderResolved(
         logger.debugPrint("Tracked packet number: {}\n", .{pn_full});
     }
 
-    // =============================================================================
-    // STEP 7: PREV Key Cleanup (RFC 9001 §6.5)
-    // =============================================================================
-
-    // Handle previous key cleanup if they were used
-    // RFC 9001 §6.5: "An endpoint MAY retain old keys for a short period
-    // to allow it to decrypt packets that were delayed."
-    if (used_prev) {
-        decrementPrevKeyAllowance(conn);
-
-        if (ctx.test_capture_enabled) {
-            logger.debugPrint("🔓 Decremented PREV key allowance\n", .{});
-        }
-    }
+    // STEP 7: previous keys are discarded by time, three PTOs after the key
+    // update (RFC 9001 §6.5), in decryptShortHeaderWithKeyRotation.
 
     // =============================================================================
     // STEP 8: Frame Processing Integration (RFC 9000 §12.4)

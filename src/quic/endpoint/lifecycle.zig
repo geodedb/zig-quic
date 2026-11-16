@@ -187,10 +187,13 @@ pub fn closeStaleConnectionsForPeer(ctx: *LifecycleContext, new_conn: *conn_mod.
 
     // Close all stale connections with appropriate error message
     for (to_close.items) |c| {
+        // Under Connection.mu, as every 1-RTT send (SONNY-4379).
+        c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         c.sendConnectionClose(0x00, "Replaced by new connection from same peer") catch |err| {
             logger.warn("sendConnectionClose for stale conn failed: {s}", .{@errorName(err)});
         };
         c.markClosed();
+        c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     }
 }
 

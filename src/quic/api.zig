@@ -223,7 +223,10 @@ pub fn deriveInitialSecretsForConfig(dst_conn_id: []const u8, quic_version: u32,
 /// RFC 9000 §19.19 defines CONNECTION_CLOSE/Application. The connection helper
 /// exposes that behaviour verbatim so API users can surface application errors.
 pub fn close(conn: *Connection, app_error_code: u64, reason: []const u8) !void {
+    // Every 1-RTT packet is sent under Connection.mu (SONNY-4379).
+    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
     const result = conn.sendConnectionClose(app_error_code, reason);
+    conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     // Observability: end the connection span on graceful close. `ok`
     // is true iff the application supplied error_code 0 (clean close).
     // When `-Dwith_otel=false` this branch is comptime-eliminated.
@@ -238,7 +241,9 @@ pub fn close(conn: *Connection, app_error_code: u64, reason: []const u8) !void {
 ///
 /// Close a connection with an error code and empty reason phrase.
 pub fn closeConnection(conn: *Connection, app_error_code: u64) !void {
+    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
     const result = conn.sendConnectionClose(app_error_code, "");
+    conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
     if (conn.obs_span_active) {
         observability.endConnectionSpan(conn.obs_span, app_error_code == 0, "");
         conn.obs_span_active = false;

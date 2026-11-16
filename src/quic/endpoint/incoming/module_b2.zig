@@ -88,9 +88,12 @@ pub fn processFrames(
             // unknown type as a connection error of type FRAME_ENCODING_ERROR."
             // Signal CONNECTION_CLOSE with FRAME_ENCODING_ERROR (0x07) for any
             // frame decode failure (Unsupported, Truncated, FrameTooLarge).
+            // Under Connection.mu, as every 1-RTT send (SONNY-4379).
+            conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
                 logger.debugPrint("Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
             };
+            conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             conn.markClosed();
             return FrameProcessResult{ .saw_close = true };
         };
@@ -244,8 +247,8 @@ pub fn generateAndSendAck(
         const pkt_len = packet.encodeShortProtectedInto(
             packet_storage,
             dcid_ack,
-            @as(u32, @truncate(conn.pn_app_tx)),
-            2,
+            conn.pn_app_tx,
+            conn.appPacketNumberLen(conn.pn_app_tx),
             ack_buf.items,
             conn.app_tx_keys.?,
             conn.tx_key_phase,
@@ -283,8 +286,8 @@ pub fn generateAndSendAck(
                 const pkt_len = packet.encodeShortProtectedInto(
                     packet_storage,
                     dcid_ack2,
-                    @as(u32, @truncate(conn.pn_app_tx)),
-                    2,
+                    conn.pn_app_tx,
+                    conn.appPacketNumberLen(conn.pn_app_tx),
                     fb.items,
                     tx_keys,
                     conn.tx_key_phase,
@@ -386,8 +389,8 @@ pub fn generateAndSendAck(
                     const pkt_len = packet.encodeShortProtectedInto(
                         packet_storage,
                         dcid_ack3,
-                        @as(u32, @truncate(conn.pn_app_tx)),
-                        2,
+                        conn.pn_app_tx,
+                        conn.appPacketNumberLen(conn.pn_app_tx),
                         ack_only.items,
                         tx_keys,
                         conn.tx_key_phase,
@@ -482,8 +485,8 @@ pub fn generateAndSendAck(
                     const pkt_len = packet.encodeShortProtectedInto(
                         packet_storage,
                         dcid_ack4,
-                        @as(u32, @truncate(conn.pn_app_tx)),
-                        2,
+                        conn.pn_app_tx,
+                        conn.appPacketNumberLen(conn.pn_app_tx),
                         frames_buf.items,
                         tx_keys,
                         conn.tx_key_phase,
@@ -555,8 +558,8 @@ pub fn generateAndSendAck(
                 const pkt_len = packet.encodeShortProtectedInto(
                     packet_storage,
                     dcid_ack5,
-                    @as(u32, @truncate(conn.pn_app_tx)),
-                    2,
+                    conn.pn_app_tx,
+                    conn.appPacketNumberLen(conn.pn_app_tx),
                     ack_only.items,
                     tx_keys,
                     conn.tx_key_phase,
