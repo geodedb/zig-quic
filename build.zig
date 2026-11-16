@@ -1102,6 +1102,26 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "sonny6654_handshake_pn")) return;
 
+    // SONNY-6655: lost NEW_CONNECTION_ID and RETIRE_CONNECTION_ID frames are
+    // sent again (RFC 9000 §13.3), and connection IDs the peer retires are
+    // retired with RETIRE_CONNECTION_ID (§5.1.2). Real endpoints over a
+    // loopback UDP relay that drops chosen server datagrams.
+    const test_sonny6655 = addTst(b, testlog_mod, compat_mod, "tests/test_sonny6655_cid_frame_retransmission.zig", target, optimize);
+    test_sonny6655.root_module.addImport("quic_api", quic_api_mod);
+    test_sonny6655.root_module.addImport("quic_config", quic_config_mod);
+    test_sonny6655.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_sonny6655.root_module.addImport("test_certs", test_certs_mod);
+    test_sonny6655.root_module.addImport("quic_build_options", build_options_mod);
+    test_sonny6655.root_module.addImport("quic_packet", quic_packet_mod);
+    test_sonny6655.root_module.addImport("quic_frame", quic_frame_mod);
+    const run_test_sonny6655 = b.addRunArtifact(test_sonny6655);
+    const sonny6655_step = b.step("test-sonny6655-cid-retransmission", "Test that lost NEW_CONNECTION_ID and RETIRE_CONNECTION_ID frames are sent again, and retired connection IDs are retired");
+    sonny6655_step.dependOn(&run_test_sonny6655.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "sonny6655_cid_retransmission")) {
+        test_step.dependOn(&run_test_sonny6655.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "sonny6655_cid_retransmission")) return;
+
     // SONNY-6454: loss detection and persistent congestion per RFC 9002.
     const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
     test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);
