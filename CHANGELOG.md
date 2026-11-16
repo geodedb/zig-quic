@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.53] - 2026-11-16
+
+### Fixed
+
+- 1-RTT packet numbers are long enough for the packets in flight (SONNY-6649, NEWGAP-14). Every 1-RTT packet used a 2-byte packet number, which the receiver decodes relative to the largest it received (RFC 9000 Appendix A.3). After more than 2^15 consecutive lost packets the next one decoded 65536 too low, its AEAD nonce was wrong, and so was every later packet's: the connection was dead. The loopback congestion-window exemption lets a sender have that many packets in flight. The length now follows RFC 9000 §17.1 and Appendix A.2 against the largest acknowledged packet number (at least 2 bytes, so the common case is unchanged); the encoder takes the packet number as u64.
+- A stream retransmission is protected with the keys its key phase says (SONNY-6649, NEWGAP-15). Up to two lost packets are retransmitted per ACK with keys copied once; when the first started a key update, the second carried the new key phase and the old keys, and the peer could not decrypt it. Under the receive path of v0.1.52 such a packet, opened by the current keys despite its other phase bit, also promoted the receiver's keys to a generation the sender had not reached.
+- No key update is initiated before the handshake is confirmed (RFC 9001 §6.1; SONNY-6649, NEWGAP-16). A client can send 1-RTT data before HANDSHAKE_DONE confirms the handshake, and initiated a key update after 512 such packets.
+- HANDSHAKE_DONE is sent again until acknowledged (RFC 9000 §13.3; SONNY-6649, NEWGAP-17). It was sent once: when that packet was lost the client never confirmed the handshake.
+- The previous receive keys are kept for three PTOs after the key update (RFC 9001 §6.5; SONNY-6649, NEWGAP-18). They were kept until 16 packets had been opened with them: packets reordered behind more than 16 of the new generation were dropped however soon they came, and without reordering the old keys stayed for the life of the generation.
+- Small STREAM frames behind a lost packet are no longer a flow control error (RFC 9000 §4.1; SONNY-6649, NEWGAP-19). The receiver allowed 16384 buffered out-of-order segments per stream, one per frame, and closed the connection with FLOW_CONTROL_ERROR beyond that: with 16-byte frames, after 256 KiB of a 16 MiB window. Contiguous out-of-order data is now one segment, so the limit counts the gaps in the received data, and a flood of tiny gapped segments is still refused. Bytes a buffered run already holds are not buffered again: a spurious retransmission into a stream window filled behind a hole would otherwise have been counted twice and closed the connection with FLOW_CONTROL_ERROR.
+
+- A benchmark scenario that cannot measure says so and fails the perf gate (SONNY-4381). Without `tests/certs` (or with certificates that do not parse) `handshake_e2e`, `stream_throughput`, `flush_cadence` and `datagram_batch` returned placeholder numbers (one iteration in 1 ms, latency 0), which passed the gate against the same placeholder. They now return a not-measured row (`ResultRow.not_measured`: `CredentialsMissing`, `CredentialsInvalid` or `ServerStartFailed`), and `bench-compare` reports `NOT-MEASURED` and exits 1 for such a row on either side.
+
+### Security
+
+- No two 1-RTT packets share a packet number, and so an AEAD nonce (RFC 9000 §12.3, RFC 9001 §5.3; SONNY-4379). Packets are numbered from `pn_app_tx` under `Connection.mu`, but some senders did not take it, and a packet they sent could get the number of one an application thread was sending: a geode server sent a FIN and another packet both numbered 189, quic-go dropped the second as a duplicate, and response pages were lost. Now under `Connection.mu`: PATH_RESPONSE, the MAX_DATA answer to DATA_BLOCKED, the DATAGRAM echo and every CONNECTION_CLOSE sent by the receive path; the HANDSHAKE_DONE resent for a late Handshake packet; the PATH_CHALLENGE sent on a peer address change; `openStream` (STREAMS_BLOCKED; `openStreamUnlocked` for callers holding the mutex), `sendDatagram`, `api.close`/`closeConnection`; the endpoint's stale- and dead-connection closes; the PMTUD probe (NEWGAP-22). With a server closing 600 streams while PATH_CHALLENGEs arrive, 74 server packet numbers were used twice; now none.
+- An undecryptable 1-RTT packet costs one header protection removal and at most one AEAD open (SONNY-6649, NEWGAP-13). The receive path tried every DCID length 0..20 with the current, next and previous keys and a "hybrid" of them, then 21 forced next-key attempts: about 85 decryption attempts per packet for anyone who knows a connection ID and its peer's address. The DCID length is known from the connection lookup (RFC 9000 §17.3.1) and the header protection key does not change with a key update (RFC 9001 §6), so the key phase bit now selects the keys (RFC 9001 §6.3, §6.5). This also ends the key promotion of a packet that the current keys opened with the other key phase bit.
+
+### CI
+
+- `.install-zig` installs ca-certificates when the CA bundle is missing, so a job with Zig cached but dependencies not yet fetched no longer fails with TlsInitializationFailed (SONNY-6650).
+- `stress-integration-20x` creates the test certificate pair and rejects not-measured rows (SONNY-4381); it used to pass on placeholder rows.
+- The interop-test job generates the certificate the servers load and fails when a case fails (SONNY-6649). It reported success whatever happened, and no case got as far as a handshake: the quic-go server found no certificate, and the Zig server could not read its fallback key, which `run_endpoint.sh` generated as root before running the endpoint as the `quic` user (fixed). A case now passes when the client exits 0 and every requested file arrived intact. Three of the four cases fail, on v0.1.52 as well (NEWGAP-20); the job stays `allow_failure`.
+
+### Tests
+
+- `zig build test-rx-packet-protection` (SONNY-6649): real endpoints over the loopback UDP relay of SONNY-6522 (now `tests/udp_relay.zig`, which can also capture, inject, hold back and filter datagrams). Covers forged packets on a live connection's path, a 33000-packet blackout, key updates while the server's 1-RTT packets are dropped, packets reordered across a key update and released within or after the server's retention period, 22000 16-byte frames behind a held-open hole, and server packet numbers while FINs race PATH_CHALLENGE answers (SONNY-4379).
+- `zig build test-bench-compare` (SONNY-4381): a not-measured row on either side makes `bench-compare` exit 1.
+
 ## [0.1.52] - 2026-11-15
 
 ### Changed

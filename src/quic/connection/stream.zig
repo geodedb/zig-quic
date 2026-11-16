@@ -44,7 +44,21 @@ pub const ReceiveState = enum {
 pub const Segment = struct {
     off: u64,
     data: []u8,
+    /// Length of the allocation `data` starts, when larger than `data.len`
+    /// (data contiguous with the segment is appended in place, SONNY-6649);
+    /// 0 when the allocation is exactly `data`. Free with freeSegment().
+    cap: usize = 0,
+
+    /// The whole allocation behind `data`.
+    pub fn allocation(self: Segment) []u8 {
+        return if (self.cap > self.data.len) self.data.ptr[0..self.cap] else self.data;
+    }
 };
+
+/// Free a segment's buffer, including capacity beyond `data.len`.
+pub fn freeSegment(alloc: std.mem.Allocator, seg: Segment) void {
+    alloc.free(seg.allocation());
+}
 
 /// Stream receive state - handles out-of-order delivery and reassembly.
 /// RFC 9000 §3: Stream States
@@ -100,7 +114,7 @@ pub const StreamRx = struct {
     }
 
     pub fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
-        for (self.bufs.items) |seg| alloc.free(seg.data);
+        for (self.bufs.items) |seg| freeSegment(alloc.*, seg);
         self.bufs.deinit(alloc.*);
         self.inbox.deinit(alloc.*);
     }
@@ -190,7 +204,12 @@ pub const StreamRx = struct {
 
     /// Buffer a data segment for reassembly, keeping `bufs` sorted by
     /// offset. Bytes already delivered are dropped and an exact
-    /// retransmission of a buffered segment is ignored.
+    /// retransmission of a buffered segment is ignored. Data that starts
+    /// where the preceding segment ends is appended to it (SONNY-6649): a
+    /// run of contiguous data is one segment however many STREAM frames
+    /// carried it, so the segment count bounds the gaps (holes) in the
+    /// received data, not the frames, and a sender of small frames behind
+    /// one lost packet stays at one segment.
     ///
     /// SONNY-6475: segments used to be appended and the whole list sorted
     /// and walked on every received packet. After one early loss in a large
@@ -209,10 +228,33 @@ pub const StreamRx = struct {
             seg_off = self.recv_off;
         }
         if (bytes.len == 0) return;
-        const at = self.segmentLowerBound(seg_off);
+        var at = self.segmentLowerBound(seg_off);
+        // Bytes the preceding segment already holds are not buffered twice
+        // (a retransmission into a coalesced run, SONNY-6649): drop them, and
+        // the rest, if any, starts where that segment ends.
+        if (at > 0) {
+            const prev = self.bufs.items[at - 1];
+            const prev_end = prev.off + @as(u64, prev.data.len);
+            if (prev_end > seg_off) {
+                const covered = prev_end - seg_off;
+                if (covered >= bytes.len) return;
+                bytes = bytes[@intCast(covered)..];
+                seg_off = prev_end;
+                at = self.segmentLowerBound(seg_off);
+            }
+        }
         if (at < self.bufs.items.len) {
             const next = self.bufs.items[at];
             if (next.off == seg_off and next.data.len >= bytes.len) return;
+        }
+        if (at > 0) {
+            const prev = &self.bufs.items[at - 1];
+            if (prev.off + @as(u64, prev.data.len) == seg_off) {
+                if (appendToSegment(alloc.*, prev, bytes)) {
+                    self.buffered_bytes += bytes.len;
+                    return;
+                } else |_| {}
+            }
         }
         // store a copy of segment
         const owned = alloc.alloc(u8, bytes.len) catch return;
@@ -222,6 +264,22 @@ pub const StreamRx = struct {
             return;
         };
         self.buffered_bytes += bytes.len;
+    }
+
+    /// Append `bytes` to `seg` in place, growing its allocation by at least
+    /// its current size (at most 1 MiB at a time), so that a run built from
+    /// many small frames costs amortized O(bytes).
+    fn appendToSegment(alloc: std.mem.Allocator, seg: *Segment, bytes: []const u8) !void {
+        const used = seg.data.len;
+        const cap = seg.allocation().len;
+        if (used + bytes.len > cap) {
+            const step = @max(bytes.len, @min(@max(cap, 1024), 1 << 20));
+            const grown = try alloc.realloc(seg.allocation(), used + step);
+            seg.data = grown[0..used];
+            seg.cap = grown.len;
+        }
+        @memcpy(seg.data.ptr[used .. used + bytes.len], bytes);
+        seg.data = seg.data.ptr[0 .. used + bytes.len];
     }
 
     /// Try to drain contiguous segments into the inbox. Only the sorted
@@ -242,7 +300,7 @@ pub const StreamRx = struct {
                 self.recv_off = seg_end;
             }
             self.buffered_bytes -|= seg.data.len;
-            alloc.free(seg.data);
+            freeSegment(alloc.*, seg);
             consumed += 1;
         }
         if (consumed > 0) {

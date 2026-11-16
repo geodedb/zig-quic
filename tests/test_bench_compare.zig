@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const compare = @import("bench_compare");
+const common = @import("bench_common");
 
 test "classify: micro prefix" {
     try std.testing.expectEqual(@as(compare.Tier, .micro), compare.classify("micro/varint"));
@@ -432,4 +433,31 @@ test "self-test: a +50% regression is detected on most rows above the floor" {
         std.debug.print("+50% injected regression detected on only {d}/{d} rows\n", .{ detected, total });
         return error.TestUnexpectedResult;
     }
+}
+
+// SONNY-4381: a scenario that could not measure (missing or invalid server
+// credentials, a server that did not start) yields an explicit
+// not-measured row, never placeholder numbers that pass the perf gate.
+
+fn notMeasuredRun(allocator: std.mem.Allocator, spec: common.ScenarioSpec) anyerror!common.RunOutput {
+    _ = spec;
+    const latencies = try allocator.alloc(u64, 1);
+    latencies[0] = 0;
+    return .{
+        .iterations = 1,
+        .wall_time_ns = 1_000_000,
+        .cpu_time_ns = 0,
+        .latencies_ns = latencies,
+        .not_measured = "CredentialsMissing",
+    };
+}
+
+test "SONNY-4381 runRepeated turns a run that could not measure into a not-measured row" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const row = try common.runRepeated(arena.allocator(), std.testing.allocator, std.testing.io, .{ .name = "integration/handshake_e2e", .variant = "1conn" }, notMeasuredRun);
+    try std.testing.expectEqualStrings("CredentialsMissing", row.not_measured.?);
+    try std.testing.expectEqual(@as(u64, 0), row.iterations);
+    try std.testing.expectEqual(@as(f64, 0), row.throughput_ops_per_sec);
+    try std.testing.expect(compare.isNotMeasured(row));
 }

@@ -365,9 +365,8 @@ fn placeholderOutput(allocator: std.mem.Allocator) !common.RunOutput {
 pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
     if (builtin.os.tag != .linux) return try placeholderOutput(allocator);
 
-    const creds = h.loadServerCreds(allocator) orelse {
-        return try placeholderOutput(allocator);
-    };
+    // SONNY-4381: no credentials, no measurement -- never a placeholder.
+    const creds = h.loadServerCreds(allocator) catch |err| return common.notMeasured(allocator, @errorName(err));
 
     const port = h.allocatePort();
     var bind_buf: [32]u8 = undefined;
@@ -380,7 +379,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         .allow_insecure = true,
     };
     var server_ep = endpoint_mod.Endpoint.init(allocator, bind_addr, &server_cfg) catch {
-        return try placeholderOutput(allocator);
+        return common.notMeasured(allocator, "ServerStartFailed");
     };
     defer server_ep.deinit();
 

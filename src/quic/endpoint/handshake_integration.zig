@@ -1349,11 +1349,12 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
     // Encode and send 1-RTT packet without heap allocation.
     const packet_storage = try conn.packet_pool.checkout();
     defer conn.packet_pool.release(packet_storage);
+    const sent_pn = conn.pn_app_tx;
     const pkt_len = packet.encodeShortProtectedInto(
         packet_storage,
         dcid,
-        @as(u32, @truncate(conn.pn_app_tx)),
-        2, // PN length
+        conn.pn_app_tx,
+        conn.appPacketNumberLen(conn.pn_app_tx),
         frames_data,
         app_tx_keys,
         conn.tx_key_phase,
@@ -1363,6 +1364,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
     try sendDatagramFull(ctx, pkt);
 
     conn.onShortHeaderPacketSent(pkt.len, true);
+    conn.handshake_done_pn = sent_pn;
 
     // Mark that HANDSHAKE_DONE has been sent
     // This prevents duplicate HANDSHAKE_DONE frames

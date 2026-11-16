@@ -186,19 +186,10 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         };
     }
 
-    // Load server credentials. On failure (cert files missing or
-    // malformed) we emit a placeholder so the bench suite remains
-    // runnable even without cert infrastructure.
-    const creds = h.loadServerCreds(allocator) orelse {
-        const latencies = try allocator.alloc(u64, 1);
-        latencies[0] = 0;
-        return .{
-            .iterations = 1,
-            .wall_time_ns = 1_000_000,
-            .cpu_time_ns = 0,
-            .latencies_ns = latencies,
-        };
-    };
+    // Load server credentials. Missing or malformed cert files mean no
+    // measurement: an explicit not-measured row that fails the perf gate,
+    // not placeholder numbers that pass it (SONNY-4381).
+    const creds = h.loadServerCreds(allocator) catch |err| return common.notMeasured(allocator, @errorName(err));
 
     // Allocate a fresh port for this scenario invocation. runRepeated
     // calls us 7 times; each call needs its own port so the prior
@@ -213,19 +204,10 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         .inline_server_priv_p256 = creds.key,
         .allow_insecure = true,
     };
-    // Server endpoint init failure (e.g., missing cert files) falls back
-    // to a placeholder so `zig build bench --suite=all` still produces
-    // a valid JSON document. Real-UDP bench runners under CI already
-    // provision the cert pair via `create_test_certs.sh`.
+    // A server endpoint that does not start (e.g. a credential it rejects)
+    // is not measured either (SONNY-4381).
     var server_ep = endpoint_mod.Endpoint.init(allocator, bind_addr, &server_cfg) catch {
-        const latencies = try allocator.alloc(u64, 1);
-        latencies[0] = 0;
-        return .{
-            .iterations = 1,
-            .wall_time_ns = 1_000_000,
-            .cpu_time_ns = 0,
-            .latencies_ns = latencies,
-        };
+        return common.notMeasured(allocator, "ServerStartFailed");
     };
     defer server_ep.deinit();
 

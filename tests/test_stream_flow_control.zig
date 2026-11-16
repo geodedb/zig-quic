@@ -310,6 +310,81 @@ test "receive-side flow control bounds out-of-order buffering (QC-01)" {
     }
 }
 
+test "the out-of-order segment cap counts gaps, not STREAM frames (SONNY-6649)" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer std.testing.expect(gpa.deinit() == .ok) catch @panic("leak or invalid free");
+    var A = gpa.allocator();
+    const byte = [_]u8{0x5a};
+
+    // A flood of tiny segments, each leaving a gap, is still bounded: the
+    // 16385th gap is a FLOW_CONTROL_ERROR, nothing is buffered past it.
+    {
+        var c = makeConn(&A);
+        defer c.deinit();
+        var gaps: usize = 0;
+        var rejected: ?anyerror = null;
+        while (gaps < 20_000) : (gaps += 1) {
+            c.pushStreamFrame(0, 2 * @as(u64, gaps) + 1, &byte, false) catch |e| {
+                rejected = e;
+                break;
+            };
+        }
+        try std.testing.expectEqual(@as(?anyerror, error.FlowControlError), rejected);
+        try std.testing.expectEqual(@as(usize, 16384), gaps);
+        try std.testing.expectEqual(@as(usize, 16384), c.streams_rx.getPtr(0).?.bufs.items.len);
+    }
+
+    // The same number of tiny frames behind one hole is one buffered run:
+    // within the window, no flow control error (RFC 9000 §4.1), and the
+    // hole filled delivers all of it.
+    {
+        var c = makeConn(&A);
+        defer c.deinit();
+        var k: u64 = 1;
+        while (k <= 20_000) : (k += 1) try c.pushStreamFrame(0, k, &byte, false);
+        const rx = c.streams_rx.getPtr(0).?;
+        try std.testing.expectEqual(@as(usize, 1), rx.bufs.items.len);
+        try std.testing.expectEqual(@as(u64, 20_000), rx.buffered_bytes);
+        try c.pushStreamFrame(0, 0, &byte, false);
+        try std.testing.expectEqual(@as(u64, 20_001), rx.recv_off);
+        try std.testing.expectEqual(@as(usize, 0), rx.bufs.items.len);
+    }
+}
+
+test "a retransmission of data inside a buffered run is not buffered again (SONNY-6649)" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer std.testing.expect(gpa.deinit() == .ok) catch @panic("leak or invalid free");
+    var A = gpa.allocator();
+    var c = makeConn(&A);
+    defer c.deinit();
+
+    // 2000 contiguous 100-byte frames behind a hole at [0, 100): one run of
+    // 200000 bytes.
+    var data: [100]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @truncate(i);
+    var k: u64 = 1;
+    while (k <= 2000) : (k += 1) try c.pushStreamFrame(0, k * 100, &data, false);
+    const rx = c.streams_rx.getPtr(0).?;
+    try std.testing.expectEqual(@as(usize, 1), rx.bufs.items.len);
+    try std.testing.expectEqual(@as(u64, 200_000), rx.buffered_bytes);
+
+    // Spurious retransmissions of frames in the middle of the run, and one
+    // straddling its end, as a sender whose ACKs are late sends them: the
+    // bytes are already buffered, so nothing is added (they used to become
+    // overlapping segments counted twice against the stream window).
+    k = 500;
+    while (k < 1500) : (k += 1) try c.pushStreamFrame(0, k * 100, &data, false);
+    try c.pushStreamFrame(0, 2000 * 100 + 50, &data, false);
+    try std.testing.expectEqual(@as(usize, 1), rx.bufs.items.len);
+    try std.testing.expectEqual(@as(u64, 200_050), rx.buffered_bytes);
+
+    // The hole filled, everything is delivered exactly once.
+    try c.pushStreamFrame(0, 0, &data, false);
+    try std.testing.expectEqual(@as(u64, 200_150), rx.recv_off);
+    try std.testing.expectEqual(@as(usize, 0), rx.bufs.items.len);
+    try std.testing.expectEqual(@as(u64, 0), rx.buffered_bytes);
+}
+
 test "reset_stream rx below buffered data is FINAL_SIZE_ERROR; a consistent reset finishes" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer std.testing.expect(gpa.deinit() == .ok) catch @panic("leak or invalid free");

@@ -120,7 +120,7 @@ const ServerHandle = struct {
 /// on any init failure (missing certs, port bind failure). The caller
 /// owns `stop()`.
 fn startZigServer(allocator: std.mem.Allocator) ?ServerHandle {
-    const creds = h.loadServerCreds(allocator) orelse return null;
+    const creds = h.loadServerCreds(allocator) catch return null;
 
     const port = allocatePort();
     const bind_addr = std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{port}) catch return null;

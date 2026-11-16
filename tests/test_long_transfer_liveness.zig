@@ -14,7 +14,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
-const linux = std.os.linux;
 const testlog = @import("testlog");
 const api = @import("quic_api");
 const cfg = @import("quic_config");
@@ -32,183 +31,12 @@ const MiB: usize = 1024 * 1024;
 const write_chunk: usize = 16 * 1024;
 var next_port = std.atomic.Value(u16).init(23700);
 
-fn nowMs() i64 {
-    var ts: linux.timespec = undefined;
-    _ = linux.clock_gettime(.MONOTONIC, &ts);
-    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
-}
-
-fn sleepUs(us: u64) void {
-    const ts = linux.timespec{ .sec = 0, .nsec = @intCast(us * 1000) };
-    _ = linux.nanosleep(&ts, null);
-}
-
-fn loopback(port: u16) linux.sockaddr.in {
-    return .{ .port = std.mem.nativeToBig(u16, port), .addr = std.mem.nativeToBig(u32, 0x7f000001) };
-}
-
-fn udpSocket(port: u16) !i32 {
-    const rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC, 0);
-    if (linux.errno(rc) != .SUCCESS) return error.SocketFailed;
-    const fd: i32 = @intCast(rc);
-    // Large buffers: the relay must not be what drops.
-    const big: i32 = 8 * 1024 * 1024;
-    _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.RCVBUF, std.mem.asBytes(&big), @sizeOf(i32));
-    _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.SNDBUF, std.mem.asBytes(&big), @sizeOf(i32));
-    var addr = loopback(port);
-    if (linux.errno(linux.bind(fd, @ptrCast(&addr), @sizeOf(linux.sockaddr.in))) != .SUCCESS) {
-        _ = linux.close(fd);
-        return error.BindFailed;
-    }
-    return fd;
-}
-
-/// What the relay learned about a 1-RTT packet: its key phase and packet
-/// number, read by removing header protection with the sender's HP key
-/// (RFC 9001 §5.4; the HP key does not change with a key update, §6).
-const ShortInfo = struct { phase: bool, pn: u64 };
-
-/// Counters a drop rule keeps for its test.
-const RuleState = struct {
-    dropped: u32 = 0,
-    delivered_gen1: u32 = 0,
-    /// A packet of key generation 2 was sent before any packet of
-    /// generation 1 reached the peer.
-    gen2_before_gen1_delivered: bool = false,
-    max_gen: u32 = 0,
-};
-
-const Rule = *const fn (*RuleState, ShortInfo, u32) bool;
-
-/// One direction of the relay. Tracks the sender's key generation as seen on
-/// the wire: it advances when a packet with a newer packet number carries
-/// the other key phase bit.
-const Link = struct {
-    rule: ?Rule = null,
-    state: RuleState = .{},
-    hp_ready: std.atomic.Value(bool) = .init(false),
-    hp_key: [16]u8 = undefined,
-    dcid_len: usize = 0,
-    largest_pn: ?u64 = null,
-    gen: u32 = 0,
-    gen_phase: bool = false,
-    gen_start_pn: u64 = 0,
-
-    /// Publishes the sender's header-protection key and the DCID length of
-    /// its short headers, once its 1-RTT keys exist.
-    fn publish(self: *Link, sender: *api.Connection) void {
-        const io = std.Io.Threaded.global_single_threaded.io();
-        sender.mu.lockUncancelable(io);
-        defer sender.mu.unlock(io);
-        self.hp_key = sender.app_tx_keys.?.hp;
-        self.dcid_len = sender.shortHeaderDcid().len;
-        self.hp_ready.store(true, .release);
-    }
-
-    fn decodeShort(self: *Link, pkt: []const u8) ?ShortInfo {
-        if (!self.hp_ready.load(.acquire)) return null;
-        if (pkt.len == 0 or (pkt[0] & 0x80) != 0) return null;
-        const pn_off = 1 + self.dcid_len;
-        if (pkt.len < pn_off + 4 + 16) return null;
-        const aes = std.crypto.core.aes.Aes128.initEnc(self.hp_key);
-        var mask: [16]u8 = undefined;
-        aes.encrypt(&mask, pkt[pn_off + 4 ..][0..16]);
-        const first = pkt[0] ^ (mask[0] & 0x1f);
-        const pn_len: usize = (first & 0x03) + 1;
-        var trunc: u64 = 0;
-        for (0..pn_len) |i| trunc = (trunc << 8) | (pkt[pn_off + i] ^ mask[1 + i]);
-        // RFC 9000 Appendix A.3 packet number decoding.
-        const expected: u64 = if (self.largest_pn) |l| l + 1 else 0;
-        const win: u64 = @as(u64, 1) << @intCast(pn_len * 8);
-        const hwin = win / 2;
-        var pn = (expected & ~(win - 1)) | trunc;
-        if (pn + hwin <= expected and pn < (@as(u64, 1) << 62) - win) {
-            pn += win;
-        } else if (pn > expected + hwin and pn >= win) {
-            pn -= win;
-        }
-        if (self.largest_pn == null or pn > self.largest_pn.?) self.largest_pn = pn;
-        return .{ .phase = (first & 0x04) != 0, .pn = pn };
-    }
-
-    fn generationOf(self: *Link, info: ShortInfo) u32 {
-        if (info.phase == self.gen_phase) return self.gen;
-        if (info.pn > self.gen_start_pn) {
-            self.gen += 1;
-            self.gen_phase = info.phase;
-            self.gen_start_pn = info.pn;
-            return self.gen;
-        }
-        // Reordered across the update: the previous generation.
-        return self.gen -| 1;
-    }
-
-    /// Whether a datagram is forwarded.
-    fn forward(self: *Link, pkt: []const u8) bool {
-        const rule = self.rule orelse return true;
-        const info = self.decodeShort(pkt) orelse return true;
-        return rule(&self.state, info, self.generationOf(info));
-    }
-};
-
-/// A UDP relay between the client and the server on loopback. The client
-/// sends to `front_port`; the relay forwards to the server from its own
-/// socket and relays the server's datagrams back. `up` (client to server)
-/// and `down` (server to client) decide which 1-RTT datagrams get through.
-const Relay = struct {
-    front: i32,
-    back: i32,
-    front_port: u16,
-    server: linux.sockaddr.in,
-    client: linux.sockaddr.in = undefined,
-    have_client: bool = false,
-    done: std.atomic.Value(bool) = .init(false),
-    up: Link = .{},
-    down: Link = .{},
-
-    fn init(server_port: u16) !Relay {
-        const front = try udpSocket(0);
-        errdefer _ = linux.close(front);
-        var bound: linux.sockaddr.in = undefined;
-        var bound_len: linux.socklen_t = @sizeOf(linux.sockaddr.in);
-        if (linux.errno(linux.getsockname(front, @ptrCast(&bound), &bound_len)) != .SUCCESS) return error.GetSockNameFailed;
-        const back = try udpSocket(0);
-        return .{ .front = front, .back = back, .front_port = std.mem.bigToNative(u16, bound.port), .server = loopback(server_port) };
-    }
-
-    fn deinit(self: *Relay) void {
-        _ = linux.close(self.front);
-        _ = linux.close(self.back);
-    }
-
-    fn run(self: *Relay) void {
-        var buf: [65536]u8 = undefined;
-        var fds = [_]linux.pollfd{
-            .{ .fd = self.front, .events = linux.POLL.IN, .revents = 0 },
-            .{ .fd = self.back, .events = linux.POLL.IN, .revents = 0 },
-        };
-        while (!self.done.load(.acquire)) {
-            _ = linux.poll(&fds, fds.len, 1);
-            while (true) {
-                var from: linux.sockaddr.in = undefined;
-                var from_len: linux.socklen_t = @sizeOf(linux.sockaddr.in);
-                const rc = linux.recvfrom(self.front, &buf, buf.len, 0, @ptrCast(&from), &from_len);
-                if (linux.errno(rc) != .SUCCESS) break;
-                self.client = from;
-                self.have_client = true;
-                if (!self.up.forward(buf[0..rc])) continue;
-                _ = linux.sendto(self.back, &buf, rc, 0, @ptrCast(&self.server), @sizeOf(linux.sockaddr.in));
-            }
-            while (true) {
-                const rc = linux.recvfrom(self.back, &buf, buf.len, 0, null, null);
-                if (linux.errno(rc) != .SUCCESS) break;
-                if (!self.have_client) continue;
-                if (!self.down.forward(buf[0..rc])) continue;
-                _ = linux.sendto(self.front, &buf, rc, 0, @ptrCast(&self.client), @sizeOf(linux.sockaddr.in));
-            }
-        }
-    }
-};
+const relay_mod = @import("udp_relay.zig");
+const nowMs = relay_mod.nowMs;
+const sleepUs = relay_mod.sleepUs;
+const ShortInfo = relay_mod.ShortInfo;
+const RuleState = relay_mod.RuleState;
+const Relay = relay_mod.Relay;
 
 fn patternByte(i: usize) u8 {
     return @truncate((i *% 131) ^ (i >> 13));

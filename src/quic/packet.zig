@@ -195,7 +195,7 @@ pub const AeadKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 pub fn encodeShortProtectedInto(
     out: []u8,
     dcid: []const u8,
-    packet_number: u32,
+    packet_number: u64,
     packet_number_len: u3,
     payload_plaintext: []const u8,
     keys: AeadKeys,
@@ -270,7 +270,7 @@ pub fn encodeShortProtectedInto(
 pub fn encodeShortProtected(
     alloc: std.mem.Allocator,
     dcid: []const u8,
-    packet_number: u32,
+    packet_number: u64,
     packet_number_len: u3,
     payload_plaintext: []const u8,
     keys: AeadKeys,
@@ -465,6 +465,39 @@ pub fn decodeShortProtectedWithHpInto(
     logger.debugPrint("decodeShortProtected: KEY_PHASE bit = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
 
     return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload, .key_phase = key_phase };
+}
+
+/// Key phase bit and expanded packet number of a short-header packet.
+pub const ShortHeaderPeek = struct {
+    key_phase: bool,
+    packet_number: u64,
+};
+
+/// Removes header protection from a short-header packet without decrypting
+/// it (RFC 9001 §5.4.1, §5.4.3) and returns its key phase bit and its packet
+/// number, expanded against `largest_pn` (RFC 9000 Appendix A.3). The header
+/// protection key does not change with a key update (RFC 9001 §6), so the
+/// key phase bit read here selects which keys protect the packet (§6.3).
+pub fn peekShortHeader(
+    packet_bytes: []const u8,
+    dcid_len: usize,
+    hp_key: [16]u8,
+    largest_pn: u64,
+) !ShortHeaderPeek {
+    if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
+    if ((packet_bytes[0] & 0x80) != 0) return error.InvalidHeader;
+    const pn_start = 1 + dcid_len;
+    if (pn_start + 4 + 16 > packet_bytes.len) return error.Truncated;
+    var first = packet_bytes[0];
+    var pn_buf: [4]u8 = packet_bytes[pn_start..][0..4].*;
+    const sample16: *const [16]u8 = packet_bytes[pn_start + 4 ..][0..16];
+    const pn_len = try crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &hp_key, sample16, &first, &pn_buf);
+    var truncated: u64 = 0;
+    for (pn_buf[0..pn_len]) |b| truncated = (truncated << 8) | b;
+    return .{
+        .key_phase = (first & 0x04) != 0,
+        .packet_number = crypto.expandPacketNumber(truncated, pn_len, largest_pn),
+    };
 }
 
 /// Decode short header using a custom HP key (useful for key-update hybrids).

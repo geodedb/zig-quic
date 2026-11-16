@@ -106,6 +106,11 @@ EOF
   rm -f "$openssl_config"
   chmod 600 "$key_path"
   chmod 644 "$cert_path"
+  # The endpoint runs as quic (drop_to_quic): generated as root, the key
+  # was unreadable to it and the server failed with AccessDenied.
+  if [[ "$(id -u)" == "0" ]] && id quic >/dev/null 2>&1; then
+    chown quic:quic "$key_path" "$cert_path"
+  fi
 }
 
 if [[ "${INTEROP_PRIVILEGE_CHECK:-0}" == "1" ]]; then
