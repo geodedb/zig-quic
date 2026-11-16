@@ -1981,7 +1981,11 @@ pub const Connection = struct {
         if (self.active_peer_cid_sequence) |seq| {
             var i: usize = 0;
             while (i < self.peer_cids.len) : (i += 1) {
-                const entry = self.peer_cids[i];
+                // By pointer: the slice returned must point into the
+                // connection, not into a copy of the entry on this stack
+                // frame, which is gone when the caller reads it (seen once
+                // short headers used it, SONNY-6655).
+                const entry = &self.peer_cids[i];
                 if (entry.in_use and entry.sequence == seq and entry.cid.len > 0) {
                     return entry.cid.bytes[0..entry.cid.len];
                 }
