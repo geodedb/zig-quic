@@ -351,19 +351,10 @@ fn serverThread(ctx: ServerCtx) void {
     }
 }
 
-fn placeholderOutput(allocator: std.mem.Allocator) !common.RunOutput {
-    const latencies = try allocator.alloc(u64, 1);
-    latencies[0] = 0;
-    return .{
-        .iterations = 1,
-        .wall_time_ns = 1_000_000,
-        .cpu_time_ns = 0,
-        .latencies_ns = latencies,
-    };
-}
-
 pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) return try placeholderOutput(allocator);
+    // SONNY-6656 (NEWGAP-24): a run that cannot measure returns a
+    // not-measured row, never placeholder numbers the perf gate compares.
+    if (builtin.os.tag != .linux) return common.notMeasured(allocator, "UnsupportedPlatform");
 
     // SONNY-4381: no credentials, no measurement -- never a placeholder.
     const creds = h.loadServerCreds(allocator) catch |err| return common.notMeasured(allocator, @errorName(err));
@@ -527,12 +518,11 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     const cum = cum_wall.load(.acquire);
     const latency_slice = try allocator.dupe(u64, latencies.items);
 
-    // If the flood produced zero samples (e.g. handshake storm
-    // starved the server), return a placeholder so the harness
-    // doesn't divide-by-zero in summarizeLatencies.
+    // A flood that produced no sample (e.g. a handshake storm starved
+    // the server) did not measure.
     if (latency_slice.len == 0) {
         allocator.free(latency_slice);
-        return try placeholderOutput(allocator);
+        return common.notMeasured(allocator, "NoSamples");
     }
 
     return .{
