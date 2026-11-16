@@ -337,8 +337,106 @@ pub fn bind(comptime Connection: type) type {
             return pkt.len;
         }
 
+        /// Largest STREAM payload one packet carries, as in writeStream().
+        fn maxStreamPayload(self: *const Connection) usize {
+            return @min(@as(usize, self.path_mtu) - 50, 1350);
+        }
+
+        /// Whether the tracked packet `pn` is lost on an ACK whose largest
+        /// acknowledged PN is `largest_acked`; see retransmitLostStreamPackets.
+        fn trackedPacketLost(pn: u64, largest_acked: u64, recovery_reported_loss: bool) bool {
+            if (pn >= largest_acked) return false;
+            return (largest_acked - pn) >= 3 or recovery_reported_loss;
+        }
+
+        /// A run of lost tracked packets, in PN order from `order[first]`
+        /// to `order[last]`, whose STREAM data is contiguous on one stream
+        /// and fits one packet. `count` live entries (dead PNs in between
+        /// are skipped); `len` bytes; `fin` if the last one carries the FIN.
+        const LostRun = struct { last: usize, count: usize, len: usize, fin: bool };
+
+        /// Extend the lost packet at `order[first]` with the lost packets
+        /// after it that continue its stream's data (RFC 9000 §13.3: lost
+        /// data is sent again in new frames, which need not have the
+        /// original frame boundaries).
+        fn lostRunFrom(self: *Connection, order: []const u64, first: usize, largest_acked: u64, recovery_reported_loss: bool) LostRun {
+            const head = self.app_stream_retx.getPtr(order[first]).?;
+            var run: LostRun = .{ .last = first, .count = 1, .len = head.data.len, .fin = head.fin };
+            const max_len = maxStreamPayload(self);
+            var end = head.offset + head.data.len;
+            var j = first + 1;
+            while (!run.fin and j < order.len) : (j += 1) {
+                const pn = order[j];
+                const e = self.app_stream_retx.getPtr(pn) orelse continue;
+                if (!trackedPacketLost(pn, largest_acked, recovery_reported_loss)) break;
+                if (e.stream_id != head.stream_id or e.offset != end) break;
+                if (run.len + e.data.len > max_len) break;
+                end += e.data.len;
+                run = .{ .last = j, .count = run.count + 1, .len = run.len + e.data.len, .fin = e.fin };
+            }
+            return run;
+        }
+
+        /// One tracked entry holding the data of every packet in `run`.
+        /// The caller owns the returned data.
+        fn coalesceLostRun(self: *Connection, order: []const u64, first: usize, run: LostRun) ?RetxEntry(Connection) {
+            const head = self.app_stream_retx.getPtr(order[first]).?;
+            const data = self.allocator.alloc(u8, run.len) catch return null;
+            var at: usize = 0;
+            var attempts: u16 = 0;
+            for (order[first .. run.last + 1]) |pn| {
+                const e = self.app_stream_retx.getPtr(pn) orelse continue;
+                @memcpy(data[at..][0..e.data.len], e.data);
+                at += e.data.len;
+                attempts = @max(attempts, e.retransmit_count);
+            }
+            return .{ .stream_id = head.stream_id, .offset = head.offset, .fin = run.fin, .data = data, .retransmit_count = attempts };
+        }
+
+        const RunOutcome = enum { sent, send_failed, no_memory };
+
+        /// Send the data of every packet in `run` in one new packet, which
+        /// then replaces them in the retransmission tracking. On failure
+        /// nothing was sent and they stay tracked.
+        fn retransmitLostRun(self: *Connection, order: []const u64, first: usize, run: LostRun) RunOutcome {
+            var merged = coalesceLostRun(self, order, first, run) orelse return .no_memory;
+            const next_pn = self.pn_app_tx;
+            const pkt_len = sendStreamRetransmission(self, merged) orelse {
+                self.allocator.free(merged.data);
+                return .send_failed;
+            };
+            self.retx_diag.noteRetransmit(merged.stream_id, merged.offset, merged.data.len, merged.fin);
+            self.retx_diag.noteSent(self.allocator.*, next_pn, merged.stream_id, merged.offset, merged.data.len, merged.fin);
+            for (order[first .. run.last + 1]) |pn| {
+                const removed = self.app_stream_retx.fetchRemove(pn) orelse continue;
+                self.allocator.free(removed.value.data);
+            }
+            recordAppStreamRetransmitAttempt(&merged);
+            self.stream_retx_packets +%= 1;
+            logger.debugPrint(
+                "[stream-retx] pn={}..{} ({} packets) -> pn={} stream={} off={} len={} fin={} attempt={}\n",
+                .{ order[first], order[run.last], run.count, next_pn, merged.stream_id, merged.offset, merged.data.len, merged.fin, merged.retransmit_count },
+            );
+            self.onShortHeaderPacketSent(pkt_len, true);
+            // The new packet counts once in the stream's outstanding packets,
+            // where the run counted `count` times. Released after it is
+            // tracked, so the stream cannot look fully acknowledged between.
+            const stream_id = merged.stream_id;
+            retrackAppStreamRetx(self, next_pn, merged);
+            for (1..run.count) |_| self.noteStreamPacketReleased(stream_id);
+            // No alias from the old packet numbers: an ACK for one of them
+            // acknowledges only that packet's part of this data.
+            return .sent;
+        }
+
         /// Retransmit STREAM data lost below the largest acknowledged PN,
         /// oldest first, at most two packets per ACK.
+        ///
+        /// Lost packets whose data continues on the same stream go out
+        /// together, up to a full packet (SONNY-6649). One small STREAM
+        /// frame per packet used to be retransmitted as one packet each:
+        /// after a burst loss of N such packets, recovery took N packets
+        /// and N/2 ACKs, minutes for a long blackout on a loaded host.
         ///
         /// A tracked packet below `largest_acked` is lost once it is
         /// kPacketThreshold (3) packets older (RFC 9002 §6.1.1), or as soon
@@ -367,8 +465,6 @@ pub fn bind(comptime Connection: type) type {
                 const lost_pn = order[i];
                 self.ack_retx_entries_visited +%= 1;
                 const tracked_ptr = self.app_stream_retx.getPtr(lost_pn) orelse continue;
-                if (lost_pn >= largest_acked) break;
-                const ack_gap_lost = (largest_acked - lost_pn) >= 3;
                 // CANARY: REQ=REQ-QUIC-HC-138; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AppStreamTimeLossRetx; STATUS=TESTED; TEST=app_ack_time_threshold_loss_retransmits_retained_STREAM_data; OWNER=transport; UPDATED=2026-05-28
                 //
                 // Recovery compacts packets as soon as they are acked or
@@ -379,7 +475,19 @@ pub fn bind(comptime Connection: type) type {
                 // recovery reported app loss on this ACK, any retained STREAM
                 // packet older than the largest ACK is still unacked
                 // application data and must be retransmitted.
-                if (!ack_gap_lost and !recovery_reported_loss) break;
+                if (!trackedPacketLost(lost_pn, largest_acked, recovery_reported_loss)) break;
+
+                const run = lostRunFrom(self, order, i, largest_acked, recovery_reported_loss);
+                if (run.count > 1) switch (retransmitLostRun(self, order, i, run)) {
+                    .sent => {
+                        i = run.last;
+                        retransmitted += 1;
+                        continue;
+                    },
+                    .send_failed => break,
+                    // Out of memory to coalesce: send the first one alone.
+                    .no_memory => {},
+                };
 
                 const next_pn = self.pn_app_tx;
                 // A failed send (WouldBlock, pool exhausted) leaves the entry

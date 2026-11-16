@@ -280,7 +280,7 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 - **Category:** liveness
 - **RFC:** RFC 9000 §17.1, Appendix A.2, A.3
 - **Location:** every 1-RTT `encodeShortProtectedInto` call site; `Connection.appPacketNumberLen`
-- **Status:** **Fixed** (v0.1.53, SONNY-6649). Every 1-RTT packet used a 2-byte packet number whatever the gap to the largest acknowledged. When more than 2^15 packets in a row were lost (the loopback congestion-window exemption allows that many in flight), the receiver decoded the next packet 65536 too low, its nonce was wrong and so was every later packet's. The length now follows Appendix A.2 (at least 2 bytes); the packet number passed to the encoder is u64. Reproduced with a relay blackout of packets [40000, 73000).
+- **Status:** **Fixed** (v0.1.53, SONNY-6649). Every 1-RTT packet used a 2-byte packet number whatever the gap to the largest acknowledged. When more than 2^15 packets in a row were lost (the loopback congestion-window exemption allows that many in flight), the receiver decoded the next packet 65536 too low, its nonce was wrong and so was every later packet's. The length now follows Appendix A.2 (at least 2 bytes); the packet number passed to the encoder is u64. Reproduced with a relay blackout of packets [40000, 73000). Recovering from that blackout then took one retransmission packet per lost 16-byte frame, which timed out on a 2-vCPU runner; lost STREAM data on one stream is now retransmitted a full packet at a time (RFC 9000 §13.3).
 
 ### NEWGAP-15: stream retransmission with stale send keys
 

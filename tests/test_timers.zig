@@ -266,7 +266,9 @@ test "app ack time-threshold loss retransmits retained STREAM data" {
     conn.onAckReceivedSpace(.Application, 2, 0, &.{}, null);
 
     try std.testing.expect(conn.pn_app_tx > 3);
-    try std.testing.expect(conn.app_stream_retx.count() >= 2);
+    // AAAA and BBBB stay tracked, retransmitted (together, SONNY-6649) or
+    // not; the acknowledged CCCC does not.
+    try expectTrackedCoversOnce(conn, 0, 8);
     try std.testing.expect(ep.captureLen() > 3);
 }
 
@@ -309,15 +311,125 @@ test "app ack burst loss retains every unretransmitted STREAM packet" {
     // Peer received only the newest packet: PNs 0..38 are lost.
     conn.onAckReceivedSpace(.Application, sent_packets - 1, 0, &.{}, null);
 
-    // The acked packet is dropped; every lost packet is either retransmitted
-    // (re-tracked under a new PN) or still waiting, never freed.
-    try std.testing.expectEqual(@as(usize, sent_packets - 1), conn.app_stream_retx.count());
-    var pn: u64 = 0;
-    var retransmitted: usize = 0;
-    while (pn < sent_packets - 1) : (pn += 1) {
-        if (!conn.app_stream_retx.contains(pn)) retransmitted += 1;
+    // The acked packet is dropped; the data of every lost packet is either
+    // retransmitted (re-tracked under a new PN, possibly together with the
+    // data of other lost packets) or still waiting, never freed.
+    try expectTrackedCoversOnce(conn, 0, (sent_packets - 1) * 4);
+    try std.testing.expectEqual(sent_packets + conn.stream_retx_packets, conn.pn_app_tx);
+}
+
+/// Every byte of stream 0 in [0, end) is tracked for retransmission by
+/// exactly one entry, and no other byte is.
+fn expectTrackedCoversOnce(conn: *conn_mod.Connection, start: u64, end: u64) !void {
+    var covered = try std.testing.allocator.alloc(u8, @intCast(end - start));
+    defer std.testing.allocator.free(covered);
+    @memset(covered, 0);
+    var it = conn.app_stream_retx.iterator();
+    while (it.next()) |entry| {
+        const e = entry.value_ptr;
+        try std.testing.expectEqual(@as(u64, 0), e.stream_id);
+        try std.testing.expect(e.offset >= start and e.offset + e.data.len <= end);
+        for (0..e.data.len) |k| covered[@intCast(e.offset - start + @as(u64, k))] += 1;
     }
-    try std.testing.expectEqual(@as(u64, sent_packets + retransmitted), conn.pn_app_tx);
+    for (covered) |c| try std.testing.expectEqual(@as(u8, 1), c);
+}
+
+// SONNY-6649: one small STREAM frame per packet, then a burst loss. The lost
+// frames go out again together, a full packet at a time (RFC 9000 §13.3),
+// not one packet each: a 33000-packet blackout used to take 33000
+// retransmission packets, over a minute on a loaded runner.
+test "app ack burst loss of small STREAM packets is retransmitted in full packets" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var allocator = gpa.allocator();
+
+    var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    cfg.enable_pacing = false;
+    cfg.initial_congestion_window_packets = 1024;
+    var ep = try api.QuicEndpoint.initWithTransport(&allocator, NoopTransport.init(), &cfg, .Client);
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+    const conn = try setupAppStreamConn(&ep);
+
+    const chunk = "0123456789abcdef";
+    const sent_packets: u64 = 1000;
+    var i: u64 = 0;
+    while (i < sent_packets) : (i += 1) {
+        try std.testing.expectEqual(@as(usize, chunk.len), try conn.writeStream(0, chunk, false));
+    }
+    try std.testing.expectEqual(@as(usize, sent_packets), conn.app_stream_retx.count());
+
+    // Peer received only the newest packet: PNs 0..998 are lost.
+    conn.onAckReceivedSpace(.Application, sent_packets - 1, 0, &.{}, null);
+
+    // Two retransmission packets (the per-ACK budget), each carrying as
+    // many whole lost frames as fit in max(path_mtu - 50, 1350) bytes.
+    const frames_per_packet: usize = 1350 / chunk.len;
+    const per_packet: u64 = frames_per_packet * chunk.len;
+    try std.testing.expectEqual(@as(u64, 2), conn.stream_retx_packets);
+    try std.testing.expectEqual(sent_packets + 2, conn.pn_app_tx);
+    const first = conn.app_stream_retx.getPtr(sent_packets).?;
+    try std.testing.expectEqual(@as(u64, 0), first.offset);
+    try std.testing.expectEqual(per_packet, first.data.len);
+    const second = conn.app_stream_retx.getPtr(sent_packets + 1).?;
+    try std.testing.expectEqual(per_packet, second.offset);
+    try std.testing.expectEqual(per_packet, second.data.len);
+    for (0..frames_per_packet) |k| {
+        try std.testing.expectEqualStrings(chunk, first.data[k * chunk.len ..][0..chunk.len]);
+    }
+    // Nothing lost was freed, and the stream counts one outstanding packet
+    // per tracked entry (it retires when they are all acknowledged).
+    try expectTrackedCoversOnce(conn, 0, (sent_packets - 1) * chunk.len);
+    const tracked_left: usize = @intCast(sent_packets - 1 - 2 * frames_per_packet + 2);
+    try std.testing.expectEqual(tracked_left, conn.app_stream_retx.count());
+    try std.testing.expectEqual(@as(u32, @intCast(tracked_left)), conn.stream_txs.getPtr(0).?.retx_outstanding);
+
+    // Acknowledging both retransmissions releases their data, and the next
+    // lost frames go out the same way.
+    const ranges = [_]conn_mod.AckRange{};
+    conn.onAckReceivedSpace(.Application, sent_packets + 1, 1, &ranges, null);
+    try std.testing.expectEqual(@as(u64, 4), conn.stream_retx_packets);
+    try expectTrackedCoversOnce(conn, 2 * per_packet, (sent_packets - 1) * chunk.len);
+    try std.testing.expectEqual(@as(u32, @intCast(conn.app_stream_retx.count())), conn.stream_txs.getPtr(0).?.retx_outstanding);
+}
+
+// Lost packets of different streams are not merged: each retransmission
+// carries one stream's data at its own offsets.
+test "app ack burst loss does not merge STREAM data of different streams" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var allocator = gpa.allocator();
+
+    var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    cfg.enable_pacing = false;
+    cfg.initial_congestion_window_packets = 1024;
+    var ep = try api.QuicEndpoint.initWithTransport(&allocator, NoopTransport.init(), &cfg, .Client);
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+    const conn = try setupAppStreamConn(&ep);
+
+    const s0 = try conn.openStream(true);
+    const s1 = try conn.openStream(true);
+    try std.testing.expect(s0 != s1);
+    const rounds: u64 = 10;
+    var i: u64 = 0;
+    while (i < rounds) : (i += 1) {
+        try std.testing.expectEqual(@as(usize, 4), try conn.writeStream(s0, "AAAA", false));
+        try std.testing.expectEqual(@as(usize, 4), try conn.writeStream(s1, "BBBB", false));
+    }
+    const sent_packets = 2 * rounds;
+    conn.onAckReceivedSpace(.Application, sent_packets - 1, 0, &.{}, null);
+
+    try std.testing.expectEqual(@as(u64, 2), conn.stream_retx_packets);
+    try std.testing.expectEqual(@as(usize, sent_packets - 1), conn.app_stream_retx.count());
+    const a = conn.app_stream_retx.getPtr(sent_packets).?;
+    try std.testing.expectEqual(s0, a.stream_id);
+    try std.testing.expectEqual(@as(u64, 0), a.offset);
+    try std.testing.expectEqualStrings("AAAA", a.data);
+    const b = conn.app_stream_retx.getPtr(sent_packets + 1).?;
+    try std.testing.expectEqual(s1, b.stream_id);
+    try std.testing.expectEqual(@as(u64, 0), b.offset);
+    try std.testing.expectEqualStrings("BBBB", b.data);
 }
 
 // Wide ACK ranges (more PNs than the 256-entry enumeration handed to
@@ -348,14 +460,10 @@ test "app ack wide range drops all acknowledged STREAM tracking" {
     conn.onAckReceivedSpace(.Application, sent_packets - 1, 149, &ranges, null);
 
     // Only the data of the two unacknowledged packets (148, 149) remains
-    // tracked, under its original PN or as a retransmission. Acknowledged
-    // packets must not be retransmitted spuriously.
-    try std.testing.expectEqual(@as(usize, 2), conn.app_stream_retx.count());
-    var it = conn.app_stream_retx.iterator();
-    while (it.next()) |entry| {
-        const off = entry.value_ptr.offset;
-        try std.testing.expect(off == 148 * 4 or off == 149 * 4);
-    }
+    // tracked, under its original PN or as a retransmission (one, since
+    // their data is contiguous, SONNY-6649). Acknowledged packets must not
+    // be retransmitted spuriously.
+    try expectTrackedCoversOnce(conn, 148 * 4, 150 * 4);
 }
 
 test "app PTO send failure rearms retransmission timer" {

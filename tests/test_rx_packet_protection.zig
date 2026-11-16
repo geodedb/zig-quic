@@ -228,7 +228,10 @@ test "SONNY-6649 1-RTT packet numbers stay decodable after a long blackout (RFC 
     // next one decodes 65536 too low, its AEAD nonce is wrong, and so is
     // every later packet's: the connection is dead. The client here sends
     // one small STREAM frame per packet; the relay drops its packets
-    // [40000, 73000), after which they get through again.
+    // [40000, 73000), after which they get through again. The lost frames
+    // must then be retransmitted together, a full packet at a time: one
+    // packet per lost frame did not finish within the deadline on a 2-vCPU
+    // runner (SONNY-6649, main pipeline 3073168754).
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     if (skip_under_fips) return error.SkipZigTest;
     const port = next_port.fetchAdd(1, .seq_cst);
@@ -297,14 +300,21 @@ test "SONNY-6649 1-RTT packet numbers stay decodable after a long blackout (RFC 
     const invalid = @atomicLoad(u64, &sc.aead_rx_invalid_count, .monotonic);
     conn.mu.lockUncancelable(io);
     const pn_tx = conn.pn_app_tx;
+    const retx_packets = conn.stream_retx_packets;
     conn.mu.unlock(io);
-    testlog.print("\n  SONNY-6649 blackout: dropped={d} client pn_tx={d} relay largest={d} server largest rx={d} undecryptable={d} delivered={d} of {d} finished={}\n", .{ relay.up.state.dropped, pn_tx, relay.up.state.max_pn, server_largest_rx, invalid, server.received.load(.acquire), sent, server.finished.load(.acquire) });
+    testlog.print("\n  SONNY-6649 blackout: dropped={d} client pn_tx={d} relay largest={d} server largest rx={d} undecryptable={d} retransmission packets={d} delivered={d} of {d} finished={}\n", .{ relay.up.state.dropped, pn_tx, relay.up.state.max_pn, server_largest_rx, invalid, retx_packets, server.received.load(.acquire), sent, server.finished.load(.acquire) });
 
     try testing.expectEqual(@as(u32, blackout_len), relay.up.state.dropped);
     try testing.expect(server_largest_rx >= blackout_from + blackout_len);
     try testing.expectEqual(@as(u64, 0), invalid);
     try testing.expect(server.finished.load(.acquire));
     try testing.expectEqual(sent, server.received.load(.acquire));
+    // Lost data goes out again in full packets, not one 16-byte frame per
+    // packet: even if every byte sent had to be retransmitted, that takes
+    // at most sent / 500 packets (SONNY-6649). One packet per lost frame
+    // was more than 33000 packets, over a minute of recovery on a loaded
+    // 2-vCPU runner.
+    try testing.expect(retx_packets <= sent / 500);
     _ = api.close(conn, 0, "done") catch {};
 }
 

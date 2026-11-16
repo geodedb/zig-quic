@@ -269,6 +269,10 @@ test "SONNY-6434 recording packets past the tracking cap costs amortized constan
     }
 }
 
+/// A STREAM payload two of which never fit one packet: each lost packet is
+/// retransmitted alone (smaller contiguous ones are sent together, SONNY-6649).
+const big_chunk = [_]u8{'D'} ** 1000;
+
 // RFC 9002 §6.1.1: a packet is lost once kPacketThreshold (3) newer packets
 // are acknowledged. Lost STREAM data is retransmitted oldest first; packets
 // within the threshold, and packets above the largest acknowledged, are not.
@@ -286,7 +290,7 @@ test "SONNY-6434 ACK retransmits only packet-threshold losses, oldest first" {
     conn.rec.refreshAtomicMirrors();
 
     var i: u64 = 0;
-    while (i < 14) : (i += 1) _ = try conn.writeStream(0, "DATA", false);
+    while (i < 14) : (i += 1) try std.testing.expectEqual(big_chunk.len, try conn.writeStream(0, &big_chunk, false));
 
     // Peer acknowledges only PN 10. PNs 0..7 are lost (10 - pn >= 3); 8 and 9
     // are within the threshold; 11..13 were sent after the largest acked.
@@ -295,7 +299,7 @@ test "SONNY-6434 ACK retransmits only packet-threshold losses, oldest first" {
     try std.testing.expect(!conn.app_stream_retx.contains(0));
     try std.testing.expect(!conn.app_stream_retx.contains(1));
     try std.testing.expectEqual(@as(u64, 0), conn.app_stream_retx.get(14).?.offset);
-    try std.testing.expectEqual(@as(u64, 4), conn.app_stream_retx.get(15).?.offset);
+    try std.testing.expectEqual(@as(u64, 1000), conn.app_stream_retx.get(15).?.offset);
     for ([_]u64{ 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13 }) |pn| {
         try std.testing.expect(conn.app_stream_retx.contains(pn));
     }
@@ -303,8 +307,8 @@ test "SONNY-6434 ACK retransmits only packet-threshold losses, oldest first" {
     // A repeated ACK continues with the next-oldest lost packets.
     conn.onAckReceivedSpace(.Application, 10, 0, &.{}, null);
     try std.testing.expectEqual(@as(u64, 18), conn.pn_app_tx);
-    try std.testing.expectEqual(@as(u64, 8), conn.app_stream_retx.get(16).?.offset);
-    try std.testing.expectEqual(@as(u64, 12), conn.app_stream_retx.get(17).?.offset);
+    try std.testing.expectEqual(@as(u64, 2000), conn.app_stream_retx.get(16).?.offset);
+    try std.testing.expectEqual(@as(u64, 3000), conn.app_stream_retx.get(17).?.offset);
     try std.testing.expect(conn.app_stream_retx.contains(8));
     try std.testing.expect(conn.app_stream_retx.contains(9));
     try std.testing.expect(conn.app_stream_retx.contains(13));
@@ -337,7 +341,7 @@ test "SONNY-6434 ACK-path retransmit send failure keeps lost data tracked" {
     conn.rec.refreshAtomicMirrors();
 
     var i: u64 = 0;
-    while (i < 8) : (i += 1) _ = try conn.writeStream(0, "DATA", false);
+    while (i < 8) : (i += 1) try std.testing.expectEqual(big_chunk.len, try conn.writeStream(0, &big_chunk, false));
 
     sender.fail = true;
     conn.onAckReceivedSpace(.Application, 7, 0, &.{}, null); // 0..4 lost
@@ -348,7 +352,7 @@ test "SONNY-6434 ACK-path retransmit send failure keeps lost data tracked" {
     conn.onAckReceivedSpace(.Application, 7, 0, &.{}, null);
     try std.testing.expectEqual(@as(u64, 10), conn.pn_app_tx);
     try std.testing.expectEqual(@as(u64, 0), conn.app_stream_retx.get(8).?.offset);
-    try std.testing.expectEqual(@as(u64, 4), conn.app_stream_retx.get(9).?.offset);
+    try std.testing.expectEqual(@as(u64, 1000), conn.app_stream_retx.get(9).?.offset);
     for ([_]u64{ 2, 3, 4, 5, 6 }) |pn| try std.testing.expect(conn.app_stream_retx.contains(pn));
 }
 
