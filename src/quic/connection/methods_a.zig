@@ -205,7 +205,16 @@ pub fn bind(comptime Connection: type) type {
         /// This mutates handshake completion state only after packet protection and
         /// datagram transmission succeed, so injected encode/send failures remain
         /// observable to callers and do not make the connection believe the frame was sent.
+        ///
+        /// Takes Connection.mu: it runs on the receive path, in the step that
+        /// completes the handshake, while the application may already be
+        /// writing on the connection, and every 1-RTT packet number (and so
+        /// AEAD nonce) is allocated under the mutex (RFC 9000 §12.3,
+        /// RFC 9001 §5.3; SONNY-6654).
         pub fn sendHandshakeDoneControl(self: *Connection) !void {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             self.advertiseInitialFlowControl();
             _ = try self.ensureLocalConnectionIdSupply();
 
@@ -237,6 +246,10 @@ pub fn bind(comptime Connection: type) type {
             );
             const pkt = packet_storage[0..pkt_len];
             _ = try self.send(pkt);
+            // MAX_DATA, MAX_STREAMS and NEW_CONNECTION_ID are resent if this
+            // packet is lost (RFC 9000 §13.3; SONNY-6655), HANDSHAKE_DONE
+            // through handshake_done_pn.
+            self.noteControlPacket(sent_pn, frames_list.items);
             self.onShortHeaderPacketSent(pkt.len, true);
             self.handshake_done_pn = sent_pn;
 

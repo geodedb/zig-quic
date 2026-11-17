@@ -1085,6 +1085,84 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "rx_packet_protection")) return;
 
+    // SONNY-6654: no packet number (and AEAD nonce) is used twice while the
+    // handshake completes and the application writes. Real endpoints over a
+    // loopback UDP relay that records the server's 1-RTT datagrams.
+    const test_sonny6654 = addTst(b, testlog_mod, compat_mod, "tests/test_sonny6654_handshake_pn_serialization.zig", target, optimize);
+    test_sonny6654.root_module.addImport("quic_api", quic_api_mod);
+    test_sonny6654.root_module.addImport("quic_config", quic_config_mod);
+    test_sonny6654.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_sonny6654.root_module.addImport("test_certs", test_certs_mod);
+    test_sonny6654.root_module.addImport("quic_build_options", build_options_mod);
+    const run_test_sonny6654 = b.addRunArtifact(test_sonny6654);
+    const sonny6654_step = b.step("test-sonny6654-handshake-pn", "Test that no packet number is used twice while the handshake completes and the application writes");
+    sonny6654_step.dependOn(&run_test_sonny6654.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "sonny6654_handshake_pn")) {
+        test_step.dependOn(&run_test_sonny6654.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "sonny6654_handshake_pn")) return;
+
+    // SONNY-6655: lost NEW_CONNECTION_ID and RETIRE_CONNECTION_ID frames are
+    // sent again (RFC 9000 §13.3), and connection IDs the peer retires are
+    // retired with RETIRE_CONNECTION_ID (§5.1.2). Real endpoints over a
+    // loopback UDP relay that drops chosen server datagrams.
+    const test_sonny6655 = addTst(b, testlog_mod, compat_mod, "tests/test_sonny6655_cid_frame_retransmission.zig", target, optimize);
+    test_sonny6655.root_module.addImport("quic_api", quic_api_mod);
+    test_sonny6655.root_module.addImport("quic_config", quic_config_mod);
+    test_sonny6655.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_sonny6655.root_module.addImport("test_certs", test_certs_mod);
+    test_sonny6655.root_module.addImport("quic_build_options", build_options_mod);
+    test_sonny6655.root_module.addImport("quic_packet", quic_packet_mod);
+    test_sonny6655.root_module.addImport("quic_frame", quic_frame_mod);
+    const run_test_sonny6655 = b.addRunArtifact(test_sonny6655);
+    const sonny6655_step = b.step("test-sonny6655-cid-retransmission", "Test that lost NEW_CONNECTION_ID and RETIRE_CONNECTION_ID frames are sent again, and retired connection IDs are retired");
+    sonny6655_step.dependOn(&run_test_sonny6655.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "sonny6655_cid_retransmission")) {
+        test_step.dependOn(&run_test_sonny6655.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "sonny6655_cid_retransmission")) return;
+
+    // SONNY-6668: the client issues connection IDs (RFC 9000 §5.1.1) and
+    // resends a lost NEW_CONNECTION_ID. Real endpoints over a loopback UDP
+    // relay that drops the client's 1-RTT datagrams.
+    const test_sonny6668 = addTst(b, testlog_mod, compat_mod, "tests/test_sonny6668_client_new_cid.zig", target, optimize);
+    test_sonny6668.root_module.addImport("quic_api", quic_api_mod);
+    test_sonny6668.root_module.addImport("quic_config", quic_config_mod);
+    test_sonny6668.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_sonny6668.root_module.addImport("test_certs", test_certs_mod);
+    test_sonny6668.root_module.addImport("quic_build_options", build_options_mod);
+    const run_test_sonny6668 = b.addRunArtifact(test_sonny6668);
+    const sonny6668_step = b.step("test-sonny6668-client-new-cid", "Test that the client issues connection IDs and resends a lost NEW_CONNECTION_ID");
+    sonny6668_step.dependOn(&run_test_sonny6668.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "sonny6668_client_new_cid")) {
+        test_step.dependOn(&run_test_sonny6668.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "sonny6668_client_new_cid")) return;
+
+    // SONNY-6656: key update windows, packet by packet through a real
+    // client endpoint's receive path: previous-phase packets across a packet
+    // number gap are opened for three PTOs and discarded after (RFC 9001
+    // §6.5); a burst of them behind the update; repeated send-side updates
+    // each waiting for an acknowledgement of the new keys (§6.1).
+    inline for (.{
+        .{ "key_update_ooo_pn_gap", "tests/test_key_update_ooo_pn_gap.zig", "test-key-update-ooo-pn-gap", "Test that previous-phase packets across a packet number gap are opened for three PTOs after a key update, then discarded" },
+        .{ "key_update_stress", "tests/test_key_update_stress.zig", "test-key-update-stress", "Test bursts of reordered packets across a key update and repeated send-side key updates" },
+    }) |ku| {
+        const t = addTst(b, testlog_mod, compat_mod, ku[1], target, optimize);
+        t.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        t.root_module.addImport("quic_packet", quic_packet_mod);
+        t.root_module.addImport("quic_frame", quic_frame_mod);
+        t.root_module.addImport("quic_tls", quic_tls_mod);
+        t.root_module.addImport("quic_key_update", conn_key_update_mod);
+        const run_t = b.addRunArtifact(t);
+        const step = b.step(ku[2], ku[3]);
+        step.dependOn(&run_t.step);
+        if (filter == null or std.mem.eql(u8, filter.?, ku[0])) {
+            test_step.dependOn(&run_t.step);
+        }
+        if (filter != null and std.mem.eql(u8, filter.?, ku[0])) return;
+    }
+
     // SONNY-6454: loss detection and persistent congestion per RFC 9002.
     const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
     test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);
@@ -3071,6 +3149,7 @@ pub fn build(b: *std.Build) void {
         "loss_detection_scan",
         "send_buffer_alloc",
     };
+    var bench_micro_exes: std.ArrayList(*std.Build.Step.Compile) = .empty;
     for (isolated_micro_suites) |suite_name| {
         const suite_mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("benchmarks/micro/{s}.zig", .{suite_name})),
@@ -3096,10 +3175,21 @@ pub fn build(b: *std.Build) void {
         suite_exe.root_module.addImport("bench_common", bench_common_mod);
         suite_exe.root_module.addImport("micro_suite", suite_mod);
         run_isolated_runner.addPrefixedArtifactArg(b.fmt("--micro-exe=micro/{s}=", .{suite_name}), suite_exe);
+        bench_micro_exes.append(b.allocator, suite_exe) catch @panic("OOM");
     }
     if (b.args) |args| run_isolated_runner.addArgs(args);
     const bench_isolated_step = b.step("bench-isolated", "Run micro benchmarks, one executable per suite (--suite=micro|<scenario>, --output=<path>)");
     bench_isolated_step.dependOn(&run_isolated_runner.step);
+
+    // `bench-build` (SONNY-6669): compile every bench executable without
+    // running it, for any -Dtarget. scripts/bench_cross_compile.sh runs it
+    // for each release target so the suite cannot stop compiling for macOS
+    // or Windows unnoticed again (it did once std.time.Timer was removed).
+    const bench_build_step = b.step("bench-build", "Compile the bench suite (runner, isolated micro suites, comparator) without running it");
+    bench_build_step.dependOn(&install_bench_runner.step);
+    bench_build_step.dependOn(&install_bench_compare.step);
+    bench_build_step.dependOn(&b.addInstallArtifact(isolated_runner, .{}).step);
+    for (bench_micro_exes.items) |exe| bench_build_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
 
     // DEPRECATED retired-name aliases. Each invokes the runner with a fixed
     // --suite=<scenario_short_name>. bench-throughput and bench-handshake

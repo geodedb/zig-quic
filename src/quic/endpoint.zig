@@ -3181,6 +3181,22 @@ pub const Endpoint = struct {
                     // connection mutex to keep burst-loss recovery deterministic.
                     c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    // Initial and Handshake packets are numbered on the
+                    // receive path under endpoint_rx_serial_mu, not
+                    // Connection.mu: a probe sent while a receive worker
+                    // sends in the same space could take its packet number,
+                    // and AEAD nonce (SONNY-6654). Endpoint.mu is held here
+                    // and the receive path takes it under the serial mutex,
+                    // so do not wait: when the receive path has the
+                    // connection, re-arm for the next wake-up.
+                    if (!c.endpoint_rx_serial_mu.tryLock()) {
+                        if (c.pto_initial_active and c.pto_initial_id == t.id) {
+                            c.pto_initial_active = false;
+                            c.markPtoDirty();
+                        }
+                        continue;
+                    }
+                    defer c.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     if (!self.forcing_timer_expiry and !c.handshakePtoDue(.Initial, @intCast(@max(0, nowNsMonotonic())))) {
                         // Early wake-up (NEWGAP-10): re-arm for the real deadline.
                         if (c.pto_initial_active and c.pto_initial_id == t.id) {
@@ -3199,6 +3215,16 @@ pub const Endpoint = struct {
                     if (!self.isConnectionLive(c)) continue;
                     c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    // Serialized with the receive path's Handshake packets
+                    // without waiting, as the Initial probe above (SONNY-6654).
+                    if (!c.endpoint_rx_serial_mu.tryLock()) {
+                        if (c.pto_handshake_active and c.pto_handshake_id == t.id) {
+                            c.pto_handshake_active = false;
+                            c.markPtoDirty();
+                        }
+                        continue;
+                    }
+                    defer c.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     if (!self.forcing_timer_expiry and !c.handshakePtoDue(.Handshake, @intCast(@max(0, nowNsMonotonic())))) {
                         // Early wake-up (NEWGAP-10): re-arm for the real deadline.
                         if (c.pto_handshake_active and c.pto_handshake_id == t.id) {

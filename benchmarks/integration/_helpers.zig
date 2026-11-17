@@ -122,9 +122,10 @@ pub fn allocatePort() u16 {
 }
 
 /// Linux-only nanosleep wrapper. Matches the helper used across the
-/// test suite (tests/test_transport_geode_compat.zig:28-34). Falls back
-/// to `std.Thread.sleep` on other targets so benches remain cross-
-/// compilable even though the real measurement only runs on Linux.
+/// test suite (tests/test_transport_geode_compat.zig:28-34). Elsewhere it
+/// sleeps through the Zig 0.16 `std.Io` clock API (`std.Thread.sleep`,
+/// used before, no longer exists; SONNY-6669), so the benches cross-compile
+/// even though the real measurement only runs on Linux.
 pub fn threadSleep(ns: u64) void {
     if (builtin.os.tag == .linux) {
         var ts: std.os.linux.timespec = .{
@@ -133,6 +134,6 @@ pub fn threadSleep(ns: u64) void {
         };
         _ = std.os.linux.nanosleep(&ts, &ts);
     } else {
-        std.Thread.sleep(ns);
+        std.Io.sleep(std.Io.Threaded.global_single_threaded.io(), .fromNanoseconds(ns), .awake) catch {};
     }
 }

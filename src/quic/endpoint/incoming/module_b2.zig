@@ -235,12 +235,10 @@ pub fn generateAndSendAck(
         // packet at the receiver. The previous `@min(.., 4)` truncation broke
         // routing for every standalone ACK once the deferred-ECN path fired,
         // pinning the sender's cwnd at the initial value because no ACKs
-        // advanced largest_acked. Send the full peer-initial SCID exactly as
-        // the normal-ACK and ACK-only paths below already do.
-        const dcid_ack = if (conn.peer_initial_scid.len > 0)
-            conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
-        else
-            &[_]u8{};
+        // advanced largest_acked. Send the full connection ID every 1-RTT
+        // packet uses (`shortHeaderDcid`: the peer's initial SCID until the
+        // peer retires it, SONNY-6655), as the paths below do.
+        const dcid_ack = conn.shortHeaderDcid();
 
         const packet_storage = try conn.packet_pool.checkout();
         defer conn.packet_pool.release(packet_storage);
@@ -276,10 +274,7 @@ pub fn generateAndSendAck(
             // Amplification gating: only send if validated or within 3x limit
             const allow_send = conn.canSendUnderAmplification();
             if (allow_send) {
-                const dcid_ack2 = if (conn.peer_initial_scid.len > 0)
-                    conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
-                else
-                    &[_]u8{};
+                const dcid_ack2 = conn.shortHeaderDcid();
 
                 const packet_storage = try conn.packet_pool.checkout();
                 defer conn.packet_pool.release(packet_storage);
@@ -378,11 +373,8 @@ pub fn generateAndSendAck(
                     // above): same routing failure mode — a 4-byte truncated
                     // DCID never matches the peer's full 8-byte `our_scid`,
                     // so every immediate ACK_ECN was being silently dropped at
-                    // the receiver. Use the full peer-initial SCID.
-                    const dcid_ack3 = if (conn.peer_initial_scid.len > 0)
-                        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
-                    else
-                        &[_]u8{};
+                    // the receiver. Use the full connection ID (shortHeaderDcid).
+                    const dcid_ack3 = conn.shortHeaderDcid();
 
                     const packet_storage = try conn.packet_pool.checkout();
                     defer conn.packet_pool.release(packet_storage);
@@ -471,14 +463,12 @@ pub fn generateAndSendAck(
                             }
                         }
                     }
+                    var new_cids_sent: usize = 0;
                     if (any_pending) {
-                        _ = conn.writePendingNewConnectionIds(w, 2) catch 0;
+                        new_cids_sent = conn.writePendingNewConnectionIds(w, 2) catch 0;
                     }
 
-                    const dcid_ack4 = if (conn.peer_initial_scid.len > 0)
-                        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
-                    else
-                        &[_]u8{};
+                    const dcid_ack4 = conn.shortHeaderDcid();
 
                     const packet_storage = try conn.packet_pool.checkout();
                     defer conn.packet_pool.release(packet_storage);
@@ -497,9 +487,10 @@ pub fn generateAndSendAck(
                         const send_start_ns = compat.nanoTimestamp();
                         // MAX_* frames make the packet ack-eliciting, and it
                         // is resent with current values if lost (RFC 9000
-                        // §13.3; SONNY-6486).
+                        // §13.3; SONNY-6486), as is NEW_CONNECTION_ID
+                        // (SONNY-6655).
                         const carries_control = fc_frames_sent > 0 or sent_max_data != null or
-                            sent_max_streams_bidi != null or sent_max_streams_uni != null;
+                            sent_max_streams_bidi != null or sent_max_streams_uni != null or new_cids_sent > 0;
                         const ack_pn = conn.pn_app_tx;
                         // CANARY: REQ=REQ-QUIC-HC-086; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckOnlySingleSend; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
                         // sendAppPacketAndTrack is the single send/accounting
@@ -548,10 +539,7 @@ pub fn generateAndSendAck(
                 const ack2 = frame.Frame{ .ack = .{ .largest = ack_desc2.largest, .ack_delay = ack_delay2, .first_range = ack_desc2.first_range, .ranges = ack_desc2.ranges, .ecn = ack_ecn_common } };
                 _ = ack2.write(w2) catch 0;
 
-                const dcid_ack5 = if (conn.peer_initial_scid.len > 0)
-                    conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
-                else
-                    &[_]u8{};
+                const dcid_ack5 = conn.shortHeaderDcid();
 
                 const packet_storage = try conn.packet_pool.checkout();
                 defer conn.packet_pool.release(packet_storage);

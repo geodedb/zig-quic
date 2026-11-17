@@ -174,17 +174,8 @@ fn clientThread(ctx: ClientCtx) void {
 }
 
 pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) {
-        // Non-Linux: placeholder keeps the suite cross-compilable.
-        const latencies = try allocator.alloc(u64, 1);
-        latencies[0] = 0;
-        return .{
-            .iterations = 1,
-            .wall_time_ns = 1_000_000,
-            .cpu_time_ns = 0,
-            .latencies_ns = latencies,
-        };
-    }
+    // Not measured off Linux (SONNY-6668); the suite still cross-compiles.
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
 
     // Load server credentials. Missing or malformed cert files mean no
     // measurement: an explicit not-measured row that fails the perf gate,

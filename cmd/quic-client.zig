@@ -61,10 +61,12 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    // stream echo on client-initiated stream 0: write then read
+    // stream echo on client-initiated stream 0: write then read. Each poll
+    // waits at most 10 ms: about 20 s for the handshake and the write, 10 s
+    // for the response, inside the e2e job's 30 s budget (SONNY-6668).
     var wrote: bool = false;
     var attempts: usize = 0;
-    while (!wrote and attempts < 5000) : (attempts += 1) {
+    while (!wrote and attempts < 2000) : (attempts += 1) {
         // Require HANDSHAKE_DONE before sending application data to reduce early loss risk.
         if (!api.handshakeDoneSeen(conn)) {
             try api.poll(ep, 10);
@@ -97,7 +99,7 @@ pub fn main(init: std.process.Init) !void {
     var rbuf: [4096]u8 = undefined;
     var total: usize = 0;
     var polls: usize = 0;
-    while (polls < 5000 and total == 0) : (polls += 1) {
+    while (wrote and polls < 1000 and total == 0) : (polls += 1) {
         try api.poll(ep, 10);
         const n = api.readStream(conn, 0, rbuf[0..]) catch 0;
         if (n > 0) total = n;
@@ -105,6 +107,12 @@ pub fn main(init: std.process.Init) !void {
     if (total > 0) {
         std.debug.print("echo: {s}\n", .{rbuf[0..total]});
         std.debug.print("received echo ({d} bytes)\n", .{total});
+    }
+    // A run that did not complete its request/response stream fails
+    // (SONNY-6668): no handshake confirmation, nothing written, or no echo.
+    const completed = wrote and total > 0;
+    if (!completed) {
+        std.debug.print("error: no request/response stream completed (handshake confirmed={}, request written={}, response bytes={d})\n", .{ api.handshakeDoneSeen(conn), wrote, total });
     }
     // Attempt graceful close so any pending allocation owned by connection is released before endpoint deinit.
     api.close(conn, 0, "bye") catch {};
@@ -115,4 +123,5 @@ pub fn main(init: std.process.Init) !void {
         api.poll(ep, 5) catch break;
     }
     api.destroy(ep, conn);
+    if (!completed) std.process.exit(1);
 }

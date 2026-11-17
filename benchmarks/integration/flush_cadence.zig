@@ -326,17 +326,6 @@ fn variantFromString(v: []const u8) Variant {
     return .small_writes_1_stream;
 }
 
-fn placeholderOutput(allocator: std.mem.Allocator) !common.RunOutput {
-    const latencies = try allocator.alloc(u64, 1);
-    latencies[0] = 0;
-    return .{
-        .iterations = 1,
-        .wall_time_ns = 1_000_000,
-        .cpu_time_ns = 0,
-        .latencies_ns = latencies,
-    };
-}
-
 // ---------------------------------------------------------------------
 // Variant runners. Each returns the list of per-sample latencies plus
 // the "wait-bound total" (sum of per-op waits) which is carried through
@@ -585,7 +574,9 @@ fn runSustained(
 // ---------------------------------------------------------------------
 
 pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) return try placeholderOutput(allocator);
+    // SONNY-6656 (NEWGAP-24): a run that cannot measure returns a
+    // not-measured row, never placeholder numbers the perf gate compares.
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
 
     // SONNY-4381: no credentials, no measurement -- never a placeholder.
     const creds = h.loadServerCreds(allocator) catch |err| return common.notMeasured(allocator, @errorName(err));
@@ -632,12 +623,12 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         .allow_insecure = true,
     };
     var client_ep = endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &cli_cfg) catch {
-        return try placeholderOutput(allocator);
+        return common.notMeasured(allocator, "ClientStartFailed");
     };
     defer client_ep.deinit();
 
     const conn = api.connect(&client_ep, server_target, SERVER_SNI) catch {
-        return try placeholderOutput(allocator);
+        return common.notMeasured(allocator, "ConnectFailed");
     };
 
     // Drive handshake.
@@ -646,15 +637,15 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         _ = client_ep.pollWithStats(1) catch {};
     }
     if (!api.isHandshakeConfirmed(conn)) {
-        return try placeholderOutput(allocator);
+        return common.notMeasured(allocator, "HandshakeTimeout");
     }
 
     // ------------------------------------------------------------------
     // Dispatch variant.
     // ------------------------------------------------------------------
     var latencies: std.ArrayList(u64) = .empty;
-    // Errors below won't propagate up as failures (we return a
-    // placeholder); we just deinit on the way out.
+    // Errors below do not propagate: a variant that produced no sample is
+    // not measured (below); we just deinit on the way out.
     errdefer latencies.deinit(allocator);
 
     var wait_bound_total: u64 = 0;
@@ -704,11 +695,11 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     _ = api.close(conn, 0, "done") catch {};
     _ = client_ep.pollWithStats(1) catch {};
 
-    // If the variant produced no samples, return a placeholder so the
-    // harness doesn't divide-by-zero in summarizeLatencies.
+    // A variant that produced no sample (it failed, or a starved server
+    // answered nothing) did not measure.
     if (latencies.items.len == 0) {
         latencies.deinit(allocator);
-        return try placeholderOutput(allocator);
+        return common.notMeasured(allocator, "NoSamples");
     }
 
     const latency_slice = try allocator.dupe(u64, latencies.items);

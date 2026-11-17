@@ -838,10 +838,14 @@ pub fn processInitialResolved(
             // Mirror the 1-RTT path (module_b2.processFrames) instead of silently
             // dropping the rest of the packet.
             logger.debugPrint("[processInitial] Frame decode error at offset {}: {} (first_byte=0x{X:0>2}) -> FRAME_ENCODING_ERROR\n", .{ offset, err, first_byte });
+            // A 1-RTT packet when the 1-RTT keys exist: under Connection.mu,
+            // like every 1-RTT send (SONNY-6654).
+            conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
                 logger.debugPrint("[processInitial] Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
             };
             conn.markClosed();
+            conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             break;
         };
         logger.debugPrint("[processInitial] Decoded frame type: {}\n", .{std.meta.activeTag(fr.f)});

@@ -69,6 +69,13 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.peer_stream_gaps = .empty;
     conn.streams_retired = 0;
     conn.ctrl_retx = .empty;
+    // Peer connection ID retirement (SONNY-6655): NEW_CONNECTION_ID and
+    // every ACK read these.
+    conn.peer_cids = @splat(.{});
+    conn.active_peer_cid_sequence = null;
+    conn.peer_retire_prior_to = 0;
+    conn.peer_initial_cid_retired = false;
+    conn.pending_retire_len = 0;
     conn.pn_app_tx = 0;
     conn.tx_key_phase = false;
     conn.app_tx_keys = null;

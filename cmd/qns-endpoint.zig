@@ -1066,7 +1066,10 @@ pub fn main(init: std.process.Init) !void {
                     // runner's 30s "no recent network activity" timeout from
                     // tripping while recovery still has outstanding work.
                     if (elapsedMsSince(last_keepalive) >= 1000) {
+                        // A 1-RTT packet: under Connection.mu (SONNY-6654).
+                        conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
                         conn.sendPtoProbeApp();
+                        conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                         api.flush(ep, 1);
                         last_keepalive = nanoTimestamp();
                     }
