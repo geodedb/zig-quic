@@ -829,7 +829,7 @@ pub fn processInitialResolved(
 
     while (offset < decrypted.payload.len) {
         logger.debugPrint("[processInitial] Decoding frame at offset {}/{}\n", .{ offset, decrypted.payload.len });
-        const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
+        var fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
             const first_byte = if (offset < decrypted.payload.len) decrypted.payload[offset] else 0;
             // RFC 9000 §12.4: "An endpoint MUST treat the receipt of a frame of
             // unknown type as a connection error of type FRAME_ENCODING_ERROR."
@@ -840,7 +840,7 @@ pub fn processInitialResolved(
             logger.debugPrint("[processInitial] Frame decode error at offset {}: {} (first_byte=0x{X:0>2}) -> FRAME_ENCODING_ERROR\n", .{ offset, err, first_byte });
             // A 1-RTT packet when the 1-RTT keys exist: under Connection.mu,
             // like every 1-RTT send (SONNY-6654).
-            conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            conn.lockForEndpoint();
             conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
                 logger.debugPrint("[processInitial] Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
             };
@@ -848,6 +848,8 @@ pub fn processInitialResolved(
             conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             break;
         };
+        // ACK ranges into this copy, not decodeOne's dead stack frame (SONNY-6673).
+        fr.anchor();
         logger.debugPrint("[processInitial] Decoded frame type: {}\n", .{std.meta.activeTag(fr.f)});
         offset += fr.n;
 

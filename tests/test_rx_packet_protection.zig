@@ -477,6 +477,47 @@ const PrevKeysOutcome = struct {
 
 const Release = enum { at_once, after_retention };
 
+/// Releases the relay's held packets once the server has opened 16 packets
+/// with the new keys: at once, or after the server's retention period for
+/// the previous keys. Runs on its own thread, concurrently with the upload:
+/// the release must follow the server's key update, not the end of the
+/// upload, which on a starved runner came after the retention period
+/// (SONNY-6673: the server had opened about 100 packets of the new
+/// generation, 160-260 ms after the update, against ~120-150 ms of
+/// retention), so that the run measured nothing.
+const Releaser = struct {
+    sc: *api.Connection,
+    link: *relay_mod.Link,
+    when: Release,
+    discard_ns: u64 = 0,
+    promoted_ns: u64 = 0,
+    released_ns: u64 = 0,
+
+    fn run(self: *Releaser) void {
+        const promoted_deadline = nowMs() + 10_000;
+        while (nowMs() < promoted_deadline) {
+            self.sc.mu.lockUncancelable(io);
+            const promoted = self.sc.rx_key_gen >= 1 and self.sc.pn_app.max >= self.sc.rx_key_gen_start_pn + 16;
+            self.discard_ns = self.sc.rx_prev_discard_ns;
+            self.sc.mu.unlock(io);
+            if (promoted) {
+                self.promoted_ns = relay_mod.nowNs();
+                break;
+            }
+            sleepUs(200);
+        }
+        if (self.when == .after_retention) {
+            // Past the server's deadline, bounded so that a broken deadline
+            // cannot hang the test.
+            const target = @min(self.discard_ns, self.promoted_ns + 60 * std.time.ns_per_s) + 50 * std.time.ns_per_ms;
+            const now = relay_mod.nowNs();
+            if (target > now) sleepUs((target - now) / 1000);
+        }
+        self.released_ns = relay_mod.nowNs();
+        self.link.release_requested.store(true, .release);
+    }
+};
+
 /// Holds back the client's packets of key generation 0 numbered from
 /// `hold_from_pn` (at most relay_mod.max_held) across its first key update,
 /// and releases them once the server opened 16 packets with the new keys:
@@ -508,33 +549,17 @@ fn reorderAcrossKeyUpdate(hold_from_pn: u64, when: Release) !PrevKeysOutcome {
         cli_thread.join();
     }
 
+    var releaser: Releaser = .{ .sc = sc, .link = &relay.up, .when = when };
+    const releaser_thread = try std.Thread.spawn(.{}, Releaser.run, .{&releaser});
     const sid = try api.openStream(conn, true);
     // One key update (after 512 ack-eliciting packets once the handshake is
     // confirmed), not two: the next comes 512 packets after it.
-    const sent = try uploadPastKeyUpdate(conn, sid, &relay.up, 100);
-    var discard_ns: u64 = 0;
-    var promoted_ns: u64 = 0;
-    const promoted_deadline = nowMs() + 10_000;
-    while (nowMs() < promoted_deadline) {
-        sc.mu.lockUncancelable(io);
-        const promoted = sc.rx_key_gen >= 1 and sc.pn_app.max >= sc.rx_key_gen_start_pn + 16;
-        discard_ns = sc.rx_prev_discard_ns;
-        sc.mu.unlock(io);
-        if (promoted) {
-            promoted_ns = relay_mod.nowNs();
-            break;
-        }
-        sleepUs(200);
-    }
-    if (when == .after_retention) {
-        // Past the server's deadline, bounded so that a broken deadline
-        // cannot hang the test.
-        const target = @min(discard_ns, promoted_ns + 60 * std.time.ns_per_s) + 50 * std.time.ns_per_ms;
-        const now = relay_mod.nowNs();
-        if (target > now) sleepUs((target - now) / 1000);
-    }
-    const released_ns = relay_mod.nowNs();
-    relay.up.release_requested.store(true, .release);
+    const sent = uploadPastKeyUpdate(conn, sid, &relay.up, 100);
+    releaser_thread.join();
+    const sent_bytes = try sent;
+    const discard_ns = releaser.discard_ns;
+    const promoted_ns = releaser.promoted_ns;
+    const released_ns = releaser.released_ns;
     const deadline = nowMs() + 30_000;
     while (nowMs() < deadline and !(server.finished.load(.acquire) and relay.up.released.load(.acquire) > 0)) sleepUs(1_000);
     // Let the server process the released packets.
@@ -549,7 +574,7 @@ fn reorderAcrossKeyUpdate(hold_from_pn: u64, when: Release) !PrevKeysOutcome {
         .rejected = @atomicLoad(u64, &sc.aead_rx_invalid_count, .monotonic),
         .rx_key_gen = rx_key_gen,
         .prev_keys_kept = prev_keys_kept,
-        .delivered_all = server.finished.load(.acquire) and server.received.load(.acquire) == sent,
+        .delivered_all = server.finished.load(.acquire) and server.received.load(.acquire) == sent_bytes,
         .released_in_window = released_ns < discard_ns,
         .retention_ms = (discard_ns -| promoted_ns) / std.time.ns_per_ms,
     };

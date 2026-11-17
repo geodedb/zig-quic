@@ -1330,7 +1330,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
 
     // A 1-RTT packet: its packet number (and AEAD nonce) is allocated under
     // Connection.mu like every other (SONNY-6654).
-    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    conn.lockForEndpoint();
     defer conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // Check if we have Application TX keys

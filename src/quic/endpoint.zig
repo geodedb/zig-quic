@@ -1189,7 +1189,7 @@ pub const Endpoint = struct {
         }
 
         var should_queue = false;
-        c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        c.lockForEndpoint();
         if (!c.accepted_enqueued and
             c.app_rx_keys != null and
             c.app_tx_keys != null and
@@ -1206,7 +1206,7 @@ pub const Endpoint = struct {
         }
 
         self.accepted.append(self.allocator, c) catch |err| {
-            c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            c.lockForEndpoint();
             c.accepted_enqueued = false;
             c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
@@ -2415,7 +2415,7 @@ pub const Endpoint = struct {
                     // concurrently write STREAM frames for the same connection,
                     // so serialize dirty recompute with writeStream(), ACK
                     // handling, and PTO expiry on the connection mutex.
-                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    c.lockForEndpoint();
                     if (!c.closed) {
                         c.computeAndMaybeArmPtoInitial(self);
                         c.computeAndMaybeArmPtoHandshake(self);
@@ -3004,7 +3004,7 @@ pub const Endpoint = struct {
         };
         // Trigger PATH_CHALLENGE if 1-RTT keys are available (§9.3), under
         // Connection.mu like every 1-RTT send (SONNY-4379):
-        c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        c.lockForEndpoint();
         c.sendPathChallenge();
         c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         logger.debugPrint("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
@@ -3143,7 +3143,7 @@ pub const Endpoint = struct {
                     // standalone ACK so request/response workloads can piggyback
                     // it on the response packet. This timer is the RFC 9000
                     // max_ack_delay fallback for upload-only or quiet peers.
-                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    c.lockForEndpoint();
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     if (c.app_ack_delay_timer_id == t.id) c.app_ack_delay_timer_id = 0;
                     if (c.app_ack_eliciting_since_ack == 0 or c.app_tx_keys == null) continue;
@@ -3179,7 +3179,7 @@ pub const Endpoint = struct {
                     // retransmission buffers, and packet-number state. Serialize
                     // it with application writes and ACK processing on the
                     // connection mutex to keep burst-loss recovery deterministic.
-                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    c.lockForEndpoint();
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     // Initial and Handshake packets are numbered on the
                     // receive path under endpoint_rx_serial_mu, not
@@ -3213,7 +3213,7 @@ pub const Endpoint = struct {
                 },
                 .PtoHandshake => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
-                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    c.lockForEndpoint();
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     // Serialized with the receive path's Handshake packets
                     // without waiting, as the Initial probe above (SONNY-6654).
@@ -3241,7 +3241,7 @@ pub const Endpoint = struct {
                 },
                 .PtoApp => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
-                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    c.lockForEndpoint();
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     if (self.forcing_timer_expiry or c.appPtoDue(@intCast(@max(0, nowNsMonotonic())))) {
                         c.setPtoExpiredApp();
@@ -3257,7 +3257,7 @@ pub const Endpoint = struct {
                     if (!self.isConnectionLive(c)) continue;
                     // A PMTUD probe is a 1-RTT packet: under Connection.mu
                     // like the PTO probes above (SONNY-4379, NEWGAP-22).
-                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    c.lockForEndpoint();
                     defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     c.pmtudOnTimer(self);
                 },
@@ -3382,7 +3382,7 @@ pub const Endpoint = struct {
         for (to_close.items) |c| {
             if (c.closed) continue; // may have been closed by a stale sweep above
             // Under Connection.mu, as every 1-RTT send (SONNY-4379).
-            c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            c.lockForEndpoint();
             c.sendConnectionClose(0x00, "idle: no packets within dead_conn_reap budget") catch |err| {
                 logger.warn("reapDeadConnections: sendConnectionClose failed: {s}", .{@errorName(err)});
             };

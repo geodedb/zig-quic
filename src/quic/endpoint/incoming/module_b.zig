@@ -192,7 +192,7 @@ fn processHandshakeResolvedWithHeader(
     defer handshake_integration.clearCurrentConnection();
 
     // Update packet number tracking (under conn.mu to prevent PnWindow race)
-    conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    conn.*.lockForEndpoint();
     conn.*.trackRecvPnHandshake(decrypted.packet_number);
     conn.*.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
@@ -213,10 +213,12 @@ fn processHandshakeResolvedWithHeader(
     const now_ns: u64 = @intCast(compat.nanoTimestamp());
 
     while (offset < decrypted.payload.len) {
-        const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
+        var fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
             logger.debugPrint("processHandshake: Frame decode error at offset {}: {}\n", .{ offset, err });
             break;
         };
+        // ACK ranges into this copy, not decodeOne's dead stack frame (SONNY-6673).
+        fr.anchor();
         offset += fr.n;
 
         switch (fr.f) {
@@ -379,7 +381,7 @@ fn processHandshakeResolvedWithHeader(
             const w = @import("compat").arrayListWriter(&frames_buf, ctx.allocator.*);
 
             // GAP-0200: Lock conn.mu for ACK generation (reads PnWindow, writes ack_ranges_buf)
-            conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            conn.*.lockForEndpoint();
             const ack_desc = conn.*.buildAckHandshake();
             const ack_ecn = conn.*.getAckEcn(.Handshake);
             const ack_delay = conn.*.getAckDelayEncoded(.Handshake, now_ns);
@@ -449,7 +451,7 @@ fn processHandshakeResolvedWithHeader(
         _ = (frame.Frame{ .handshake_done = {} }).write(dw) catch 0;
         // A 1-RTT packet, sent while the application may already be sending
         // on this connection: under Connection.mu (SONNY-4379).
-        conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        conn.*.lockForEndpoint();
         defer conn.*.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         conn.*.sendControlFrames(done_frames.items);
     }

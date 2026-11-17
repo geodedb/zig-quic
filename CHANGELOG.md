@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.55] - 2026-11-17
+
+### Fixed
+
+- Received ACK ranges are read from the frame the receive path decoded (SONNY-6673). `frame.decodeOne` returned an ACK's ranges in the frame's own buffer but left `ranges` pointing at the copy in its own stack frame, dead once it returned; every caller read the ranges from there. Release builds read whatever had since been written there: ACKs claimed packet numbers the peer never received, the STREAM data they carried was released, and a stream behind a lost packet never completed (the hole test of `test-rx-packet-protection` hung the ReleaseFast job). `decodeOne` now returns `ranges` empty and the result type `frame.Decoded`, whose `anchor` points `ranges` at the value the caller keeps; the 1-RTT, Handshake and Initial receive paths anchor it. A caller that does not anchor sees fewer ACK ranges, never wrong ones.
+- An application thread writing a stream in a loop no longer starves the connection's own ACK processing (SONNY-6673). `writeStream` and the endpoint's receive path, timers and reaper all take `Connection.mu`, which is not fair: the writer released it and took it again before the endpoint thread it woke could run. A client writing 20000 16-byte packets over loopback processed almost none of the server's ACKs meanwhile (the largest packet number it saw acknowledged trailed the server's largest received by 5000-10000); its socket overflowed, and since an ACK frame covers only the receiver's last 256 packet numbers, it later took most of what it had sent as lost and sent it again (SONNY-6649: 63000 retransmissions after a 33000-packet blackout). Endpoint threads now take the lock with `Connection.lockForEndpoint`, which records that they wait, and `writeStream`/`sendDatagram` take it with `lockForSend`, which first lets such a waiting thread have it (at most 8 waits of 250 us, so an endpoint thread that is not scheduled does not stall the writer). The trailing gap is now under 60 packets unloaded and under 400 on 2 loaded cores; an unwaited lock costs one atomic load more. The endpoint work v0.1.54 put under the mutex (HANDSHAKE_DONE, `deriveAppKeys`, the Initial-path CONNECTION_CLOSE, NEW/RETIRE_CONNECTION_ID) and STREAM ingest (`pushStreamFrame`), STOP_SENDING and RESET_STREAM take it the same way. A server still sheds an ACK frame when its connection is busy (`handleAck`, unchanged).
+
+### Tests
+
+- `zig build test-writer-ack-starvation` (SONNY-6673): a client writes 20000 16-byte STREAM packets as fast as `writeStream` takes them through the loopback relay; the gap between the server's largest received packet number and the client's largest acknowledged must stay within 2048 (5000-10000 before the fix).
+- The key-update reorder tests of `test-rx-packet-protection` release the held packets from a thread that watches the server's key update, not after the upload's last packet (SONNY-6673). On 2 cores with 16 busy loops the upload of the 100 packets past the update ended 160-260 ms after it, past the server's ~120-150 ms retention for the previous keys, so the release was always late and the "within retention" test failed without measuring anything; what each test asserts is unchanged.
+
 ## [0.1.54] - 2026-11-16
 
 ### Fixed
