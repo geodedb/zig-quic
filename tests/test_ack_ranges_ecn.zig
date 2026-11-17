@@ -18,9 +18,11 @@ test "ack multi-range encode/decode with ECN counts" {
     const n = try a.write(fbs.writer());
     // First byte should be ACK_ECN (0x03)
     try std.testing.expect(buf[0] == @intFromEnum(frame.FrameType.ACK_ECN));
-    const pr = try frame.parse(buf[0..n]);
-    try std.testing.expect(std.mem.eql(u8, @tagName(pr.frame), "ack"));
-    const ack = pr.frame.ack;
+    // decodeOne + anchor: the ranges live in the decoded frame (SONNY-6673).
+    var pr = try frame.decodeOne(buf[0..n]);
+    pr.anchor();
+    try std.testing.expect(std.mem.eql(u8, @tagName(pr.f), "ack"));
+    const ack = pr.f.ack;
     try std.testing.expectEqual(@as(u64, 100), ack.largest);
     try std.testing.expectEqual(@as(u64, 2), ack.first_range);
     try std.testing.expectEqual(@as(usize, 2), ack.ranges.len);

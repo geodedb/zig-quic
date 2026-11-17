@@ -82,14 +82,14 @@ pub fn processFrames(
     // Parse frames from payload
     while (offset < payload.len) {
         const first_byte = if (payload[offset..].len > 0) payload[offset] else 0;
-        const fr = frame.decodeOne(payload[offset..]) catch |err| {
+        var fr = frame.decodeOne(payload[offset..]) catch |err| {
             logger.debugPrint("Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
             // RFC 9000 §12.4: "An endpoint MUST treat receipt of a frame of
             // unknown type as a connection error of type FRAME_ENCODING_ERROR."
             // Signal CONNECTION_CLOSE with FRAME_ENCODING_ERROR (0x07) for any
             // frame decode failure (Unsupported, Truncated, FrameTooLarge).
             // Under Connection.mu, as every 1-RTT send (SONNY-4379).
-            conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            conn.lockForEndpoint();
             conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
                 logger.debugPrint("Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
             };
@@ -97,6 +97,8 @@ pub fn processFrames(
             conn.markClosed();
             return FrameProcessResult{ .saw_close = true };
         };
+        // ACK ranges into this copy, not decodeOne's dead stack frame (SONNY-6673).
+        fr.anchor();
         logger.debugPrint("Decoded frame at offset {}: type={s}\n", .{ offset, @tagName(fr.f) });
         if (fr.f == .stream) {
             const s = fr.f.stream;

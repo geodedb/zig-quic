@@ -213,7 +213,7 @@ pub fn bind(comptime Connection: type) type {
         /// RFC 9001 §5.3; SONNY-6654).
         pub fn sendHandshakeDoneControl(self: *Connection) !void {
             const io = std.Io.Threaded.global_single_threaded.io();
-            self.mu.lockUncancelable(io);
+            self.lockForEndpoint();
             defer self.mu.unlock(io);
             self.advertiseInitialFlowControl();
             _ = try self.ensureLocalConnectionIdSupply();
@@ -886,7 +886,7 @@ pub fn bind(comptime Connection: type) type {
         /// CWE-366 mitigation: Thread-safe - acquires connection mutex to protect stream maps.
         pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
             var wake_readers = false;
-            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            self.lockForEndpoint();
             defer {
                 self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                 if (wake_readers) {

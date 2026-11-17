@@ -618,6 +618,8 @@ pub const Connection = struct {
     // connection.mu may wait for tls_context_mu or endpoint_rx_serial_mu
     // (the Initial/Handshake PTO timer only tries the latter).
     mu: std.Io.Mutex = std.Io.Mutex.init,
+    /// Endpoint threads waiting in `lockForEndpoint` (SONNY-6673).
+    mu_endpoint_waiters: std.atomic.Value(u32) = .init(0),
     // CANARY: REQ=REQ-QUIC-HC-134; FEATURE="High-Concurrency Requests"; ASPECT=SentPacketLegacyMapLock; STATUS=TESTED; TEST=onPacketSent legacy sent maps tolerate concurrent PTO accounting; OWNER=transport; UPDATED=2026-05-28
     // Protects legacy sent_time/sent_sizes maps updated by onPacketSent from
     // endpoint poll workers and PTO retransmission paths.
@@ -1305,6 +1307,7 @@ pub const Connection = struct {
         // (0x02), the first `lockUncancelable` call enters `futexWait(expect=contended)`
         // with no thread ever posting a wake -- classic handshake deadlock.
         self.mu = std.Io.Mutex.init;
+        self.mu_endpoint_waiters = .init(0);
         self.sent_history_mu = std.Io.Mutex.init;
         self.endpoint_rx_serial_mu = std.Io.Mutex.init;
         self.tls_context_mu = std.Io.Mutex.init;
@@ -1807,6 +1810,53 @@ pub const Connection = struct {
     /// `Endpoint.mu`.
     pub fn markEndpointDestroying(self: *Connection) void {
         self.endpoint_destroying.store(true, .release);
+    }
+
+    /// How long `lockForSend` defers to a waiting endpoint thread: at most
+    /// `send_defer_waits` waits of `send_defer_wait_ns` (SONNY-6673).
+    pub const send_defer_wait_ns: u64 = 250 * std.time.ns_per_us;
+    pub const send_defer_waits: u32 = 8;
+
+    /// Take `mu` on an endpoint thread (receive path, timers, PTO, reaping).
+    /// Equivalent to `mu.lockUncancelable`, but while this thread waits,
+    /// application writers defer to it (`lockForSend`, SONNY-6673).
+    pub fn lockForEndpoint(self: *Connection) void {
+        if (self.mu.tryLock()) return;
+        const io = std.Io.Threaded.global_single_threaded.io();
+        _ = self.mu_endpoint_waiters.fetchAdd(1, .acq_rel);
+        self.mu.lockUncancelable(io);
+        if (self.mu_endpoint_waiters.fetchSub(1, .acq_rel) == 1) {
+            io.futexWake(u32, &self.mu_endpoint_waiters.raw, std.math.maxInt(u32));
+        }
+    }
+
+    /// Take `mu` for an application send (writeStream, sendDatagram). When
+    /// an endpoint thread is waiting for `mu`, first wait until it has
+    /// taken it, for at most `send_defer_waits` waits of
+    /// `send_defer_wait_ns` (an endpoint thread that is not scheduled does
+    /// not stall the writer for long).
+    ///
+    /// `mu` is not fair: an application thread that writes in a loop
+    /// releases it and takes it again before the endpoint thread it woke
+    /// gets to run, and the endpoint almost never gets the lock. ACKs
+    /// then go unprocessed while the socket buffer overflows; the sender
+    /// believes the data they acknowledge lost and sends it again
+    /// (SONNY-6673: 75000 packets sent, about 40 of the peer's ACKs
+    /// processed).
+    pub fn lockForSend(self: *Connection) void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var waiters = self.mu_endpoint_waiters.load(.acquire);
+        var waits: u32 = 0;
+        while (waiters != 0 and waits < send_defer_waits) : (waits += 1) {
+            @branchHint(.unlikely);
+            const timeout: std.Io.Timeout = .{ .duration = .{
+                .raw = std.Io.Duration.fromNanoseconds(send_defer_wait_ns),
+                .clock = .awake,
+            } };
+            io.futexWaitTimeout(u32, &self.mu_endpoint_waiters.raw, waiters, timeout) catch break;
+            waiters = self.mu_endpoint_waiters.load(.acquire);
+        }
+        self.mu.lockUncancelable(io);
     }
 
     /// True while at least one poll worker still pins this connection.

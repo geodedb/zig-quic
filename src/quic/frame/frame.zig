@@ -47,6 +47,23 @@ pub const Ack = struct {
     ranges_buf: [ack_mod.max_ack_ranges]AckRange = undefined,
     ranges_len: usize = 0,
 };
+
+/// A decoded frame. An ACK's ranges are in `ranges_buf`, which moves with
+/// every copy of the frame, so `decodeOne` cannot return a `ranges` slice
+/// into it: it pointed into decodeOne's own stack frame, dead once it
+/// returned, and release builds read garbage ranges from it, acknowledging
+/// packets the peer never received and releasing their STREAM data
+/// (SONNY-6673). `ranges` is returned empty; keep the result in a variable
+/// and call `anchor` on it to read the ranges.
+pub const Decoded = struct {
+    f: Frame,
+    n: usize,
+
+    /// Point an ACK's `ranges` at this value's own range storage.
+    pub fn anchor(self: *Decoded) void {
+        if (self.f == .ack) self.f.ack.ranges = self.f.ack.ranges_buf[0..self.f.ack.ranges_len];
+    }
+};
 pub const Datagram = struct { data: []const u8 };
 pub const MaxData = struct { max: u64 };
 pub const MaxStreamData = struct { stream_id: u64, max: u64 };
@@ -127,7 +144,7 @@ pub const Frame = union(enum) {
 };
 
 /// Decode one frame from the front of `buf`, returning the frame and bytes consumed.
-pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
+pub fn decodeOne(buf: []const u8) !Decoded {
     if (buf.len == 0) return error.Truncated;
 
     const t = buf[0];
@@ -156,7 +173,7 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
     // ACK / ACK_ECN
     if (t == @intFromEnum(FrameType.ACK) or t == @intFromEnum(FrameType.ACK_ECN)) {
         const result = try ack_mod.decodeAck(buf);
-        var ackf = Frame{
+        const ackf = Frame{
             .ack = .{
                 .largest = result.largest,
                 .ack_delay = result.ack_delay,
@@ -167,7 +184,9 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
                 .ranges_len = result.ranges_len,
             },
         };
-        ackf.ack.ranges = ackf.ack.ranges_buf[0..result.ranges_len];
+        // `ranges` stays empty: a slice into `ranges_buf` here would point
+        // into this stack frame once returned. Callers anchor it
+        // (Decoded.anchor) in the copy they keep (SONNY-6673).
         return .{ .f = ackf, .n = result.n };
     }
 
@@ -335,6 +354,7 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
 }
 
 /// Compatibility wrapper for existing tests: parse returns { frame, n }.
+/// An ACK's `ranges` is empty (see Decoded); use decodeOne and anchor.
 pub fn parse(buf: []const u8) !struct { frame: Frame, n: usize } {
     const r = try decodeOne(buf);
     return .{ .frame = r.f, .n = r.n };
