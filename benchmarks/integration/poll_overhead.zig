@@ -38,19 +38,9 @@ const cfg = @import("quic_config");
 const test_alpn = [_][]const u8{"h3"};
 
 pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) {
-        // Non-Linux placeholder: keeps the suite cross-platform
-        // compilable. Real measurement only runs on Linux where the
-        // endpoint's UDP transport is supported.
-        const latencies = try allocator.alloc(u64, 1);
-        latencies[0] = 0;
-        return .{
-            .iterations = 1,
-            .wall_time_ns = 1_000_000,
-            .cpu_time_ns = 0,
-            .latencies_ns = latencies,
-        };
-    }
+    // Not measured off Linux, where the endpoint's UDP transport is not
+    // supported: a not-measured row, not placeholder numbers (SONNY-6668).
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
 
     var config = cfg.QuicConfig{
         .alpn = &test_alpn,

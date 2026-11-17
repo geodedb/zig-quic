@@ -194,7 +194,7 @@ fn ensureQuicGoBuilt(allocator: std.mem.Allocator) bool {
 }
 
 pub fn runQuicGoHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) return try harness.placeholderOutput(allocator, "quic-go");
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
     if (!harness.checkToolchain(allocator, "go")) return try harness.placeholderOutput(allocator, "quic-go");
     if (!ensureQuicGoBuilt(allocator)) return try harness.placeholderOutput(allocator, "quic-go");
 
@@ -231,7 +231,7 @@ fn ensureQuinnBuilt(allocator: std.mem.Allocator) bool {
 }
 
 pub fn runQuinnHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) return try harness.placeholderOutput(allocator, "quinn");
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
     if (!harness.checkToolchain(allocator, "cargo")) return try harness.placeholderOutput(allocator, "quinn");
     if (!ensureQuinnBuilt(allocator)) return try harness.placeholderOutput(allocator, "quinn");
 
@@ -260,7 +260,7 @@ pub fn runQuinnHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec
 const AIOQUIC_SCRIPT = "test-clients/aioquic-client/test_client.py";
 
 pub fn runAioquicHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) return try harness.placeholderOutput(allocator, "aioquic");
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
     if (!harness.checkToolchain(allocator, "python3")) return try harness.placeholderOutput(allocator, "aioquic");
     if (!harness.checkPythonModule(allocator, "aioquic")) return try harness.placeholderOutput(allocator, "aioquic");
     if (!harness.pathExists(AIOQUIC_SCRIPT)) return try harness.placeholderOutput(allocator, "aioquic");

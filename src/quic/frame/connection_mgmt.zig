@@ -73,9 +73,12 @@ pub fn decodeNewConnectionId(buf: []const u8) !struct {
     const seq = try varint.decode(buf[i..]);
     i += seq.n;
 
-    // Retire Prior To
+    // Retire Prior To. RFC 9000 §19.15: "Receiving a value in the Retire
+    // Prior To field that is greater than that in the Sequence Number field
+    // MUST be treated as a connection error of type FRAME_ENCODING_ERROR."
     const rpto = try varint.decode(buf[i..]);
     i += rpto.n;
+    if (rpto.value > seq.value) return error.ProtocolViolation;
 
     // Connection ID Length
     if (i >= buf.len) return error.Truncated;

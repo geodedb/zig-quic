@@ -75,3 +75,17 @@ test "runRepeated frees earlier outputs when a later sample fails" {
     AllocationScenario.fail_at = 2;
     try std.testing.expectError(error.SampleFailed, common.runRepeated(report.allocator(), std.testing.allocator, std.testing.io, .{ .name = "allocation-test" }, AllocationScenario.run));
 }
+
+// SONNY-6668: a scenario on a platform it cannot measure on (the loopback
+// QUIC scenarios are Linux-only) returns a not-measured row, which fails the
+// perf gate, never placeholder numbers that pass it.
+test "requireLinux: not measured on another OS, nothing on Linux" {
+    const A = std.testing.allocator;
+    inline for (.{ .macos, .windows, .freebsd }) |os| {
+        const out = (try common.requireLinux(A, os)) orelse return error.TestExpectedNotMeasured;
+        defer A.free(out.latencies_ns);
+        try std.testing.expectEqualStrings("UnsupportedPlatform", out.not_measured.?);
+        try std.testing.expectEqual(@as(u64, 0), out.iterations);
+    }
+    try std.testing.expect((try common.requireLinux(A, .linux)) == null);
+}

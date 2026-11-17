@@ -496,6 +496,17 @@ pub fn processShortHeaderResolved(
         });
         conn.handshake_done_seen = true;
 
+        // RFC 9000 §5.1.1: give the server connection IDs up to its
+        // active_connection_id_limit once the handshake is confirmed, as
+        // the server does when it sends HANDSHAKE_DONE. Sent now, under
+        // Connection.mu, and resent if lost (SONNY-6668).
+        if (conn.role == .Client) {
+            const issued = conn.ensureLocalConnectionIdSupply() catch 0;
+            if (issued > 0) {
+                while ((conn.flushPendingNewConnectionIds() catch 0) > 0) {}
+            }
+        }
+
         // RFC 9001 §4.1.2: Only drop Handshake keys if safe to do so
         // Client (which receives HANDSHAKE_DONE): drop after first Handshake packet sent
         const can_drop_hs_keys = if (conn.role == .Client) conn.handshake_packet_sent else false;

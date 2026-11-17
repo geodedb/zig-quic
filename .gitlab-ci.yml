@@ -523,15 +523,12 @@ e2e-test-zig:
   script:
     # Server and client binaries already built by build job
     - ls -la zig-out/bin/
-    # Start server
-    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
-    - SERVER_PID=$!
-    - sleep 3
-    # Run Zig client
-    - timeout 30 ./zig-out/bin/quic-client --addr 127.0.0.1:4433 --insecure 2>&1 | tee /tmp/client.log || true
-    - kill $SERVER_PID 2>/dev/null || true
-    # Check server accepted connection
-    - grep -q "accepted connection" /tmp/server.log || grep -q "active connections" /tmp/server.log
+    # One request/response stream between the Zig client and server, with
+    # the right flag (--connect) and the same ALPN; fails unless the client
+    # receives the echo of its request (SONNY-6668). The job used to pass
+    # --addr, which quic-client ignores, offer ALPN h3 to a server serving
+    # hq-interop, and pass whenever the server logged a connection.
+    - bash scripts/e2e_zig.sh
   after_script: *collect-e2e-logs
   artifacts:
     when: always
@@ -545,7 +542,14 @@ interop-test:
   stage: test
   image: docker:29
   services:
-    - docker:29-dind
+    # The dedicated runners bind-mount the host's /var/run/docker.sock into
+    # service containers, so dind's default unix socket is "device or
+    # resource busy" and the daemon never starts. dind's entrypoint uses
+    # DOCKER_HOST as its unix socket when it is a unix:// URL; the job still
+    # talks to it over TLS on tcp://docker:2376.
+    - name: docker:29-dind
+      variables:
+        DOCKER_HOST: unix:///run/dind-docker.sock
   tags:
     - company
     - linux
@@ -644,6 +648,12 @@ interop-test:
       # A case passes when the client exits 0 and every requested file
       # arrived intact (the quic-interop-runner checks for handshake and
       # transfer). A failure is reported, not swallowed.
+      #
+      # Every case gets a fresh simulator, as the quic-interop-runner does
+      # (SONNY-6656, NEWGAP-20): reused for the next case, with new endpoint
+      # containers on the same addresses, it forwarded nothing, and every
+      # case after the first failed with a client that never heard from the
+      # server, whichever implementations ran.
       run_case() {
         title="$1"
         server_image="$2"
@@ -652,7 +662,9 @@ interop-test:
         files="$5"
 
         echo "=== Test: ${title} ==="
-        compose rm -fsv server client >/dev/null 2>&1 || true
+        compose down -v >/dev/null 2>&1 || true
+        compose up -d sim
+        wait_for_sim
         rm -f "${SIM_DIR}"/downloads/*
         requests=""
         for f in ${files}; do requests="${requests:+${requests} }https://server4/${f}"; done
@@ -686,9 +698,6 @@ interop-test:
       }
       trap cleanup EXIT
 
-      compose up -d sim
-      wait_for_sim
-
       run_case "Zig server <-> quic-go client (handshake)" "zig-qns:local" "${QUIC_GO_IMAGE}" "handshake" "5000"
       run_case "quic-go server <-> Zig client (handshake)" "${QUIC_GO_IMAGE}" "zig-qns:local" "handshake" "5000"
       run_case "Zig server <-> quic-go client (transfer)" "zig-qns:local" "${QUIC_GO_IMAGE}" "transfer" "5000 10000"
@@ -705,7 +714,6 @@ interop-test:
     paths:
       - examples/interop/quic-network-simulator/logs/
     expire_in: 7 days
-  allow_failure: true
 
 quality-zig-gates:
   stage: test
@@ -758,6 +766,9 @@ quality-zig-gates:
     # Self-test of the comparator's noise rules against recorded CI noise
     # and injected regressions (tests/test_bench_compare.zig).
     - zig build test-bench-compare
+    # Bench harness unit tests, including not-measured rows on platforms a
+    # scenario cannot measure on (SONNY-6668).
+    - zig build test-bench-common
     # Paired-commit mode: bench the comparison commit and HEAD back to back
     # on the same runner, then compare. The committed
     # benchmarks/results/baseline.json was captured on a developer
@@ -852,6 +863,30 @@ stress-integration-20x:
       - stress-results/
     expire_in: 30 days
 
+# SONNY-6669: the bench suite compiles for every release target. It stopped
+# compiling for macOS and Windows (std.time.Timer, removed in Zig 0.16) and
+# no job noticed, because the suite was only ever built for Linux.
+bench-cross-compile:
+  stage: test
+  image: debian:bookworm-slim
+  # Six ReleaseFast builds of the whole suite: about 40 minutes on a cold
+  # cache (pipeline 3073913793), too close to the 1 h default.
+  timeout: 90m
+  tags:
+    - company
+    - linux
+    - x86
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  cache: *quic-zig-cache
+  before_script:
+    - *install-zig
+  script:
+    - bash scripts/bench_cross_compile.sh
+
 runtime-smoke-macos:
   stage: test
   # Installs its own toolchain and uses no Linux build/FIPS artifacts.
@@ -870,6 +905,7 @@ runtime-smoke-macos:
         - src/fips_backend/std_shim.zig
         - tests/test_portable_runtime.zig
         - scripts/native_runtime_smoke.sh
+        - benchmarks/**/*
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_TAG

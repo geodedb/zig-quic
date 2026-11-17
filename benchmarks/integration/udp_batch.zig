@@ -69,20 +69,9 @@ fn linuxExpectOk(rc: usize) !usize {
 }
 
 pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) {
-        // Non-Linux: emit a compile-ok placeholder so the suite runs
-        // cross-platform. Phase 7's gate script skips this bench on
-        // non-Linux hosts; the row exists so `bench --suite=all`
-        // on macOS/Windows produces a complete JSON document.
-        const latencies = try allocator.alloc(u64, 1);
-        latencies[0] = 0;
-        return .{
-            .iterations = 1,
-            .wall_time_ns = 1_000_000,
-            .cpu_time_ns = 0,
-            .latencies_ns = latencies,
-        };
-    }
+    // Not measured off Linux, where the endpoint's UDP transport is not
+    // supported: a not-measured row, not placeholder numbers (SONNY-6668).
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
 
     const linux = std.os.linux;
     const use_batch = std.mem.eql(u8, spec.variant, "batch");

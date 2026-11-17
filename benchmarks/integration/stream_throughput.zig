@@ -342,19 +342,8 @@ fn clientThread(ctx: ClientCtx) void {
     _ = ep.pollWithStats(1) catch {};
 }
 
-fn placeholderOutput(allocator: std.mem.Allocator) !common.RunOutput {
-    const latencies = try allocator.alloc(u64, 1);
-    latencies[0] = 0;
-    return .{
-        .iterations = 1,
-        .wall_time_ns = 1_000_000,
-        .cpu_time_ns = 0,
-        .latencies_ns = latencies,
-    };
-}
-
 pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
-    if (builtin.os.tag != .linux) return try placeholderOutput(allocator);
+    if (try common.requireLinux(allocator, builtin.os.tag)) |nm| return nm;
 
     // SONNY-4381: no credentials, no measurement -- never a placeholder.
     const creds = h.loadServerCreds(allocator) catch |err| return common.notMeasured(allocator, @errorName(err));

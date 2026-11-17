@@ -132,6 +132,15 @@ pub fn notMeasured(allocator: std.mem.Allocator, reason: []const u8) !RunOutput 
     };
 }
 
+/// A not-measured RunOutput when `os` is not Linux, else null (SONNY-6668).
+/// The loopback QUIC scenarios measure on Linux only; elsewhere they used to
+/// return placeholder numbers that passed the perf gate against the same
+/// placeholder. Scenarios call it with `builtin.os.tag`.
+pub fn requireLinux(allocator: std.mem.Allocator, os: std.Target.Os.Tag) !?RunOutput {
+    if (os == .linux) return null;
+    return try notMeasured(allocator, "UnsupportedPlatform");
+}
+
 pub const RunFn = *const fn (allocator: std.mem.Allocator, spec: ScenarioSpec) anyerror!RunOutput;
 
 pub fn parseOutputArg(args: []const []const u8) ?[]const u8 {
@@ -359,11 +368,9 @@ fn nanoTimestamp() i128 {
         _ = std.os.linux.clock_gettime(.REALTIME, &ts);
         return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
     }
-    // Fallback: monotonic-ish but non-epoch on unsupported hosts. Callers
-    // treat timestamps as opaque comparators; absolute epoch only matters
-    // inside ResultDocument.generated_at_unix_s which divides by ns_per_s.
-    var timer = std.time.Timer.start() catch return 0;
-    return @as(i128, @intCast(timer.read()));
+    // Elsewhere the Zig 0.16 clock API: Unix-epoch wall time, as on Linux
+    // (std.time.Timer, used before, no longer exists; SONNY-6669).
+    return std.Io.Clock.real.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
 }
 
 // ---------- Environment helpers ----------

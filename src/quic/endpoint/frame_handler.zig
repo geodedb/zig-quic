@@ -140,8 +140,15 @@ pub fn handleNewConnectionId(
     ctx: *FrameContext,
     ncid: frame.NewConnectionId,
 ) FrameResult {
-    // Record stateless reset token for later detection.
-    ctx.conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.connection_id, ncid.stateless_reset_token) catch |err| switch (err) {
+    // Under Connection.mu: the connection ID state is read by every 1-RTT
+    // sender, and the RETIRE_CONNECTION_ID frames a Retire Prior To calls
+    // for (RFC 9000 §5.1.2) are sent here (SONNY-6655).
+    const io = std.Io.Threaded.global_single_threaded.io();
+    ctx.conn.mu.lockUncancelable(io);
+    const result = ctx.conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.connection_id, ncid.stateless_reset_token);
+    if (result) |_| ctx.conn.flushPendingRetireConnectionIds() else |_| {}
+    ctx.conn.mu.unlock(io);
+    result catch |err| switch (err) {
         // RFC 9000 §5.1.1 (NEWGAP-03): peer exceeded our advertised
         // active_connection_id_limit. Close with CONNECTION_ID_LIMIT_ERROR (0x09).
         error.ConnectionIdLimitError => {
@@ -164,6 +171,10 @@ pub fn handleRetireConnectionId(
     ctx: *FrameContext,
     rc: frame.RetireConnectionId,
 ) FrameResult {
+    // Under Connection.mu, like the senders that read the connection IDs.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    ctx.conn.mu.lockUncancelable(io);
+    defer ctx.conn.mu.unlock(io);
     ctx.conn.onRetireConnectionId(rc.sequence);
     return .{ .saw_ack_eliciting = true };
 }
