@@ -82,6 +82,11 @@ pub const Transport = struct {
 
     /// Send multiple packets to peers.
     ///
+    /// Sends a prefix of `items` and returns its length, which is less than
+    /// `items.len` when a send fails part-way. It returns an error only when
+    /// it sent none of them, so a caller never sends one twice (SONNY-6737).
+    /// A `sendBatchFn` keeps the same contract.
+    ///
     /// If the backend does not provide native batched send, this falls back to
     /// per-packet send calls.
     pub fn sendBatch(self: *Transport, items: []const SendBatchItem) !usize {
@@ -91,8 +96,14 @@ pub const Transport = struct {
         }
         var sent: usize = 0;
         for (items) |it| {
-            const n = try self.send(it.peer, it.data);
-            if (n != it.data.len) return error.ShortWrite;
+            const n = self.send(it.peer, it.data) catch |err| {
+                if (sent > 0) return sent;
+                return err;
+            };
+            if (n != it.data.len) {
+                if (sent > 0) return sent;
+                return error.ShortWrite;
+            }
             sent += 1;
         }
         return sent;
