@@ -473,11 +473,19 @@ pub const UdpTransport = struct {
     fn sendBatchFallback(self: *UdpTransport, items: []const SendBatchItem) !usize {
         // Cross-platform per-packet fallback used when sendmmsg is unavailable
         // (non-Linux) or when batch capacity is exceeded.
+        // Like Transport.sendBatch: once some went out, return their count
+        // rather than an error, so the caller does not send them again.
         var sent_items: usize = 0;
         while (sent_items < items.len) : (sent_items += 1) {
             const it = items[sent_items];
-            const sent = try posixSendTo(self.fd, it.peer, it.data);
-            if (sent != it.data.len) return error.ShortWrite;
+            const sent = posixSendTo(self.fd, it.peer, it.data) catch |err| {
+                if (sent_items > 0) return sent_items;
+                return err;
+            };
+            if (sent != it.data.len) {
+                if (sent_items > 0) return sent_items;
+                return error.ShortWrite;
+            }
         }
         return sent_items;
     }
@@ -526,7 +534,13 @@ pub const UdpTransport = struct {
             }
 
             const rc = linux.sendmmsg(@intCast(self.fd), &msgs, @intCast(chunk_len), 0);
-            const sent = try linuxResultToCount(rc);
+            // A chunk that fails after earlier chunks went out ends the
+            // batch with their count, not an error: the caller would send
+            // them again (SONNY-6737).
+            const sent = linuxResultToCount(rc) catch |err| {
+                if (sent_total > 0) break;
+                return err;
+            };
             if (sent == 0) break;
             sent_total += sent;
             if (sent < chunk_len) break;

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.57] - 2026-11-17
+
+### Fixed
+
+- Every paced datagram is sent exactly once when a batched send is only partly accepted (SONNY-6737). `Transport.sendBatch` returns how many of the batch it sent, but `processExpiredTimers` ignored the count: when the socket took only part of a batch (`sendmmsg` stopping at EAGAIN or at a datagram it rejects), the paced datagrams past it were freed unsent, although their packet numbers were used, and left to loss recovery. Those datagrams now stay in the timer queue with their original deadlines and go out first, in order, on the next expiry. A batch the socket refuses at once with WouldBlock stays queued the same way; any other error still falls back to one send per datagram, which now sends each once.
+- `UdpTransport.sendBatch` returns the number sent when a later `sendmmsg` chunk (past the first 64 datagrams) fails after earlier ones went out, instead of failing, so the caller does not send those again (SONNY-6737). Its non-Linux per-datagram path and the generic per-datagram `Transport.sendBatch` keep the same contract: they fail only when nothing was sent. Before, the endpoint's per-packet fallback re-sent the whole batch after such a failure, duplicating the datagrams that had gone out.
+
+### Tests
+
+- `zig build test-sonny6737-partial-sendbatch` (SONNY-6737), through the real paced-send path (`Connection.send` -> `senderPaced` -> paced timer -> `processExpiredTimers`): a transport whose `sendBatchFn` takes 3 of 8 datagrams (5 were lost before the fix); a per-datagram transport whose second send fails with WouldBlock (datagram 0 was sent twice); a real UDP socket whose `sendmmsg` stops at an oversized datagram in the middle of a paced batch (the 5 after it were lost); and `UdpTransport.sendBatch` of 70 datagrams whose second chunk fails with EMSGSIZE (it failed after sending 64, now returns 64 and the receiver gets exactly those). EAGAIN is not reproducible on loopback, where UDP sends do not wait for the receiver: an overflowing receiver drops instead (its buffer capped by net.core.rmem_max), so the real-socket tests use EMSGSIZE.
+
 ## [0.1.56] - 2026-11-17
 
 ### Changed

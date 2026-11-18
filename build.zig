@@ -1196,6 +1196,23 @@ pub fn build(b: *std.Build) void {
     }
     if (filter != null and std.mem.eql(u8, filter.?, "sonny6673_ack_ranges")) return;
 
+    // SONNY-6737: every paced datagram is sent exactly once when a batched
+    // send is only partly accepted. Real endpoint paced-send path over test
+    // transports and over real UDP sockets.
+    const test_sonny6737 = addTst(b, testlog_mod, compat_mod, "tests/test_sonny6737_partial_sendbatch.zig", target, optimize);
+    test_sonny6737.root_module.addImport("quic_config", quic_config_mod);
+    test_sonny6737.root_module.addImport("quic_conn", quic_conn_mod);
+    test_sonny6737.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    test_sonny6737.root_module.addImport("quic_endpoint_transport", endpoint_transport_mod);
+    test_sonny6737.root_module.addImport("quic_udp_transport", endpoint_udp_transport_mod);
+    const run_test_sonny6737 = b.addRunArtifact(test_sonny6737);
+    const sonny6737_step = b.step("test-sonny6737-partial-sendbatch", "Test that paced datagrams are sent exactly once when a batched send is only partly accepted");
+    sonny6737_step.dependOn(&run_test_sonny6737.step);
+    if (filter == null or std.mem.eql(u8, filter.?, "sonny6737_partial_sendbatch")) {
+        test_step.dependOn(&run_test_sonny6737.step);
+    }
+    if (filter != null and std.mem.eql(u8, filter.?, "sonny6737_partial_sendbatch")) return;
+
     // SONNY-6454: loss detection and persistent congestion per RFC 9002.
     const test_recovery_conformance = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_rfc9002_conformance.zig", target, optimize);
     test_recovery_conformance.root_module.addImport("quic_recovery", quic_recovery_mod);

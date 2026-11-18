@@ -3050,6 +3050,21 @@ pub const Endpoint = struct {
         return false;
     }
 
+    /// Put paced datagrams a batched send did not take back in the timer
+    /// queue, with their original deadlines (already past), so the next
+    /// expiry sends them first and in their original order (SONNY-6737).
+    /// Caller holds mu and not timer_mu.
+    fn requeuePaced(self: *Endpoint, unsent: []const Timer) void {
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        for (unsent) |t| {
+            self.pushTimerLocked(t) catch |err| {
+                logger.debugPrint("[ENDPOINT] paced requeue failed: {s}; datagram dropped\n", .{@errorName(err)});
+                if (t.payload) |bytes| self.allocator.free(bytes);
+            };
+        }
+    }
+
     /// Process expired timers: collect under timer_mu, fire callbacks outside it.
     ///
     /// Caller must hold mu (for connection callbacks). Caller must hold timer_mu
@@ -3090,29 +3105,42 @@ pub const Endpoint = struct {
         // once (Linux).
         const transport_mod_ns = @import("endpoint/transport.zig");
         var paced_batch: [16]transport_mod_ns.SendBatchItem = undefined;
-        var paced_payloads: [16][]u8 = undefined;
+        var paced_timers: [16]Timer = undefined;
         var paced_count: usize = 0;
         const flushBatch = struct {
-            fn call(ep: *Endpoint, batch: []const transport_mod_ns.SendBatchItem, payloads: [][]u8, count: *usize) void {
-                if (count.* == 0) return;
+            fn call(ep: *Endpoint, batch: []const transport_mod_ns.SendBatchItem, queued: []const Timer, count: *usize) void {
+                const n = count.*;
+                if (n == 0) return;
+                count.* = 0;
                 if (ep.test_capture_enabled) {
-                    for (batch[0..count.*]) |it| {
+                    for (batch[0..n]) |it| {
                         _ = ep.sendTo(it.peer, it.data) catch |err| {
                             logger.debugPrint("[ENDPOINT] paced send (capture path) failed: {s}\n", .{@errorName(err)});
                         };
                     }
-                } else {
-                    _ = ep.transport.sendBatch(batch[0..count.*]) catch |err| {
-                        logger.debugPrint("[ENDPOINT] paced sendBatch failed: {s}; falling back to per-packet\n", .{@errorName(err)});
-                        for (batch[0..count.*]) |it| {
-                            _ = ep.sendTo(it.peer, it.data) catch |e2| {
-                                logger.debugPrint("[ENDPOINT] paced fallback send failed: {s}\n", .{@errorName(e2)});
-                            };
-                        }
-                    };
+                    for (queued[0..n]) |t| ep.allocator.free(t.payload.?);
+                    return;
                 }
-                for (payloads[0..count.*]) |bytes| ep.allocator.free(bytes);
-                count.* = 0;
+                // sendBatch sends a prefix of the batch and returns its
+                // length; it fails only when it sent none of it. Their
+                // packet numbers are already used, so each datagram is sent
+                // exactly once: those past the count stay queued for the
+                // next expiry instead of being freed unsent, and the
+                // per-packet fallback never resends what went out
+                // (SONNY-6737).
+                const sent = ep.transport.sendBatch(batch[0..n]) catch |err| blk: {
+                    if (err == error.WouldBlock) break :blk 0;
+                    logger.debugPrint("[ENDPOINT] paced sendBatch failed: {s}; falling back to per-packet\n", .{@errorName(err)});
+                    for (batch[0..n]) |it| {
+                        _ = ep.sendTo(it.peer, it.data) catch |e2| {
+                            logger.debugPrint("[ENDPOINT] paced fallback send failed: {s}\n", .{@errorName(e2)});
+                        };
+                    }
+                    break :blk n;
+                };
+                const done = @min(sent, n);
+                for (queued[0..done]) |t| ep.allocator.free(t.payload.?);
+                if (done < n) ep.requeuePaced(queued[done..n]);
             }
         }.call;
         for (expired_buf[0..expired_count]) |t| {
@@ -3127,10 +3155,10 @@ pub const Endpoint = struct {
                             if (t.payload) |bytes| {
                                 const paced_peer = if (t.paced_peer) |peer| peer else c.peer;
                                 paced_batch[paced_count] = .{ .peer = paced_peer, .data = bytes };
-                                paced_payloads[paced_count] = bytes;
+                                paced_timers[paced_count] = t;
                                 paced_count += 1;
                                 if (paced_count == paced_batch.len) {
-                                    flushBatch(self, &paced_batch, &paced_payloads, &paced_count);
+                                    flushBatch(self, &paced_batch, &paced_timers, &paced_count);
                                 }
                             }
                         }
@@ -3265,7 +3293,7 @@ pub const Endpoint = struct {
         }
 
         // Flush any residual paced packets (#165 + #183).
-        flushBatch(self, &paced_batch, &paced_payloads, &paced_count);
+        flushBatch(self, &paced_batch, &paced_timers, &paced_count);
 
         // Prune closed connections (under mu, which caller holds)
         self.pruneClosed();
