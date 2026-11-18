@@ -37,7 +37,10 @@ pub fn udpSocket(port: u16) !i32 {
     const rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC, 0);
     if (linux.errno(rc) != .SUCCESS) return error.SocketFailed;
     const fd: i32 = @intCast(rc);
-    // Large buffers: the relay must not be what drops.
+    // Large buffers, so that the relay drops as little as it can; the kernel
+    // caps them at net.core.rmem_max/wmem_max (208 KiB by default), and a
+    // relay that falls behind still loses datagrams in its socket (see
+    // RuleState.max_forward_gap, Relay.frontKernelDrops).
     const big: i32 = 8 * 1024 * 1024;
     _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.RCVBUF, std.mem.asBytes(&big), @sizeOf(i32));
     _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.SNDBUF, std.mem.asBytes(&big), @sizeOf(i32));
@@ -54,6 +57,34 @@ pub fn udpSocket(port: u16) !i32 {
 /// (RFC 9001 §5.4; the HP key does not change with a key update, §6).
 pub const ShortInfo = struct { phase: bool, pn: u64 };
 
+/// The `drops` column of /proc/net/udp for the 127.0.0.1 socket bound to
+/// `port`: datagrams the kernel discarded because its receive buffer was
+/// full. Null if the file or the socket is not found.
+pub fn socketKernelDrops(port: u16) ?u64 {
+    const rc = linux.open("/proc/net/udp", .{}, 0);
+    if (linux.errno(rc) != .SUCCESS) return null;
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    var buf: [256 * 1024]u8 = undefined;
+    var n: usize = 0;
+    while (n < buf.len) {
+        const r = linux.read(fd, buf[n..].ptr, buf.len - n);
+        if (linux.errno(r) != .SUCCESS or r == 0) break;
+        n += r;
+    }
+    var key_buf: [16]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "0100007F:{X:0>4} ", .{port}) catch return null;
+    var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, key) == null) continue;
+        var fields = std.mem.tokenizeScalar(u8, line, ' ');
+        var last: []const u8 = "";
+        while (fields.next()) |f| last = f;
+        return std.fmt.parseInt(u64, last, 10) catch null;
+    }
+    return null;
+}
+
 /// Counters and parameters a drop rule keeps for its test.
 pub const RuleState = struct {
     dropped: u32 = 0,
@@ -68,6 +99,16 @@ pub const RuleState = struct {
     drop_until: u64 = 0,
     /// Largest packet number the rule saw.
     max_pn: u64 = 0,
+    /// Largest packet number `dropPacketNumberRange` forwarded, and the
+    /// most consecutive packet numbers missing between two it forwarded:
+    /// the gap the receiver faced. A datagram the kernel dropped at the
+    /// relay's socket (its receive buffer is capped by net.core.rmem_max,
+    /// 208 KiB by default, and a starved relay overflows it) never reaches
+    /// the rule, so `dropped` can be smaller than the blackout while the
+    /// receiver still saw all of it missing (SONNY-6649, v0.1.56 MR
+    /// pipeline 3082071459: dropped=32368 of 33000).
+    last_forwarded: ?u64 = null,
+    max_forward_gap: u64 = 0,
 };
 
 pub const Rule = *const fn (*RuleState, ShortInfo, u32) bool;
@@ -84,6 +125,12 @@ pub fn dropPacketNumberRange(st: *RuleState, info: ShortInfo, g: u32) bool {
         st.dropped += 1;
         return false;
     }
+    if (st.last_forwarded) |last| {
+        if (info.pn > last) {
+            st.max_forward_gap = @max(st.max_forward_gap, info.pn - last - 1);
+            st.last_forwarded = info.pn;
+        }
+    } else st.last_forwarded = info.pn;
     return true;
 }
 
@@ -299,6 +346,13 @@ pub const Relay = struct {
         if (linux.errno(linux.getsockname(front, @ptrCast(&bound), &bound_len)) != .SUCCESS) return error.GetSockNameFailed;
         const back = try udpSocket(0);
         return .{ .front = front, .back = back, .front_port = std.mem.bigToNative(u16, bound.port), .server = loopback(server_port) };
+    }
+
+    /// Datagrams the kernel dropped at the relay's client-facing socket
+    /// (its receive buffer overflowed before the relay read them), from
+    /// /proc/net/udp; null if unavailable.
+    pub fn frontKernelDrops(self: *const Relay) ?u64 {
+        return socketKernelDrops(self.front_port);
     }
 
     pub fn deinit(self: *Relay) void {

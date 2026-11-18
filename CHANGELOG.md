@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.56] - 2026-11-17
+
+### Changed
+
+- otel v0.1.28 -> v0.1.30 (lazy, `-Dwith_otel`), whose tree (slog, json, config, yaml, metrics, tls, grpc-zig v0.1.16) is on thread-pool v0.2.11, so this library and its consumers resolve a single otel and thread-pool (SONNY-6630). No transport change.
+
+### Tests
+
+- The blackout test of `test-rx-packet-protection` requires the server to have faced a gap of at least the 33000 blacked-out packet numbers, not the relay to have dropped each of them itself (SONNY-6649). On a slow 2-vCPU runner (v0.1.56 MR pipeline 3082071459, ReleaseSafe) the relay's socket, whose receive buffer the kernel caps at net.core.rmem_max (208 KiB by default), overflowed while the relay was not scheduled: 632 of the blacked-out datagrams were dropped by the kernel before the relay saw them, and "expected 33000, found 32368" failed a run in which nothing else went wrong. Reproduced locally with the relay stalled 300 ms and a 208 KiB buffer (27455 dropped by the relay, 5545 by the kernel, longest gap 33000, all data delivered). The relay now records the longest run of packet numbers missing between two it forwarded (`RuleState.max_forward_gap`) and reports the kernel drops at its socket (`Relay.frontKernelDrops`, from /proc/net/udp) in the test's output. The OutOfMemory and NoTlsContext lines in that job's log come from the fault-injection tests that run before it and appear in green pipelines too.
+
 ## [0.1.55] - 2026-11-17
 
 ### Fixed

@@ -302,9 +302,17 @@ test "SONNY-6649 1-RTT packet numbers stay decodable after a long blackout (RFC 
     const pn_tx = conn.pn_app_tx;
     const retx_packets = conn.stream_retx_packets;
     conn.mu.unlock(io);
-    testlog.print("\n  SONNY-6649 blackout: dropped={d} client pn_tx={d} relay largest={d} server largest rx={d} undecryptable={d} retransmission packets={d} delivered={d} of {d} finished={}\n", .{ relay.up.state.dropped, pn_tx, relay.up.state.max_pn, server_largest_rx, invalid, retx_packets, server.received.load(.acquire), sent, server.finished.load(.acquire) });
+    const kernel_drops = relay.frontKernelDrops();
+    testlog.print("\n  SONNY-6649 blackout: dropped by the relay={d} by the kernel at its socket={?d} longest gap forwarded={d} client pn_tx={d} relay largest={d} server largest rx={d} undecryptable={d} retransmission packets={d} delivered={d} of {d} finished={}\n", .{ relay.up.state.dropped, kernel_drops, relay.up.state.max_forward_gap, pn_tx, relay.up.state.max_pn, server_largest_rx, invalid, retx_packets, server.received.load(.acquire), sent, server.finished.load(.acquire) });
 
-    try testing.expectEqual(@as(u32, blackout_len), relay.up.state.dropped);
+    // The server saw at least the whole blackout missing between two
+    // packets it received: more than 2^15 packet numbers. The relay itself
+    // drops each of them it sees; the kernel may already have dropped some
+    // at the relay's socket on a slow runner (SONNY-6649, v0.1.56 MR
+    // pipeline 3082071459: 32368 dropped by the relay, the rest never
+    // reached it), which makes the gap no shorter.
+    try testing.expect(relay.up.state.dropped <= blackout_len);
+    try testing.expect(relay.up.state.max_forward_gap >= blackout_len);
     try testing.expect(server_largest_rx >= blackout_from + blackout_len);
     try testing.expectEqual(@as(u64, 0), invalid);
     try testing.expect(server.finished.load(.acquire));
