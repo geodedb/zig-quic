@@ -1,10 +1,10 @@
 module interop
 
-go 1.27.3
+go 1.27.4
 
 require (
-	github.com/quic-go/quic-go v0.64.1
-	golang.org/x/net v0.62.0
+	github.com/quic-go/quic-go v0.65.0
+	golang.org/x/net v0.63.0
 )
 
 require (
